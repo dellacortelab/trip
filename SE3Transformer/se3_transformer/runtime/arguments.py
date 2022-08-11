@@ -24,14 +24,14 @@
 import argparse
 import pathlib
 
-from trip.data_loading import ANI1xDataModule
-from trip.model import SE3TransformerANI1x
+from se3_transformer.data_loading import QM9DataModule
+from se3_transformer.model import SE3TransformerPooled
 from se3_transformer.runtime.utils import str2bool
 
 PARSER = argparse.ArgumentParser(description='SE(3)-Transformer')
 
 paths = PARSER.add_argument_group('Paths')
-paths.add_argument('--data_dir', type=pathlib.Path, default=pathlib.Path('/results'),
+paths.add_argument('--data_dir', type=pathlib.Path, default=pathlib.Path('./data'),
                    help='Directory where the data is located or should be downloaded')
 paths.add_argument('--log_dir', type=pathlib.Path, default=pathlib.Path('/results'),
                    help='Directory where the results logs should be saved')
@@ -45,7 +45,7 @@ paths.add_argument('--load_ckpt_path', type=pathlib.Path, default=None,
 optimizer = PARSER.add_argument_group('Optimizer')
 optimizer.add_argument('--optimizer', choices=['adam', 'sgd', 'lamb'], default='adam')
 optimizer.add_argument('--learning_rate', '--lr', dest='learning_rate', type=float, default=0.002)
-optimizer.add_argument('--gamma', type=float, default=1.0)
+optimizer.add_argument('--min_learning_rate', '--min_lr', dest='min_learning_rate', type=float, default=None)
 optimizer.add_argument('--momentum', type=float, default=0.9)
 optimizer.add_argument('--weight_decay', type=float, default=0.1)
 
@@ -68,5 +68,5 @@ PARSER.add_argument('--wandb', type=str2bool, nargs='?', const=True, default=Fal
 PARSER.add_argument('--benchmark', type=str2bool, nargs='?', const=True, default=False,
                     help='Benchmark mode')
 
-ANI1xDataModule.add_argparse_args(PARSER)
-SE3TransformerANI1x.add_argparse_args(PARSER)
+QM9DataModule.add_argparse_args(PARSER)
+SE3TransformerPooled.add_argparse_args(PARSER)

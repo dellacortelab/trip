@@ -41,7 +41,7 @@ class NormSE3(nn.Module):
                  └──> feature_phase ────────────────────────────┘
     """
 
-    NORM_CLAMP = 2 ** -12  # Minimum positive subnormal for FP16
+    NORM_CLAMP = 2 ** -12  # Minimum positive subnormal for FP16  # TRIP
 
     def __init__(self, fiber: Fiber, nonlinearity: nn.Module = nn.ReLU()):
         super().__init__()

@@ -48,9 +48,6 @@ WORKDIR /workspace/trip
 COPY --from=dgl_builder /dgl ./dgl
 RUN cd dgl/python && python setup.py install && cd ../.. && rm -rf dgl
 
-# TODO: Find a better way to install SE(3)-T code
-ADD setup_se3t.sh .
-
 ADD requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 ADD . .

@@ -74,8 +74,8 @@ class MeanAbsoluteError(Metric):
 
     def update(self, preds: Tensor, targets: Tensor):
         preds = preds.detach()
-        n = torch.tensor(preds.shape, dtype=torch.int32).prod()
-        error = torch.abs(preds - targets).sum()
+        n = preds.shape[0]
+        error = torch.abs(preds.view(n, -1) - targets.view(n, -1)).sum()
         self.total += n
         self.error += error
 

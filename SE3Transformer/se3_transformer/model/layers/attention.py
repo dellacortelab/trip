@@ -45,7 +45,7 @@ class AttentionSE3(nn.Module):
             num_heads: int,
             key_fiber: Fiber,
             value_fiber: Fiber,
-            cutoff: float
+            cutoff: float  # TRIP
     ):
         """
         :param num_heads:     Number of attention heads
@@ -56,10 +56,11 @@ class AttentionSE3(nn.Module):
         self.num_heads = num_heads
         self.key_fiber = key_fiber
         self.value_fiber = value_fiber
-        self.cutoff = cutoff
+        self.cutoff = cutoff  # TRIP
 
     @staticmethod
     def cutoff_function(rel_pos, cutoff=float('inf')):
+        # TRIP
         dist = torch.norm(rel_pos, p=2, dim=1)
         bump = torch.zeros_like(dist)
         f = lambda x : 0.5*torch.cos(np.pi*x) + 0.5
@@ -91,7 +92,7 @@ class AttentionSE3(nn.Module):
                 edge_weights = dgl.ops.e_dot_v(graph, key, query).squeeze(-1)
                 edge_weights = edge_weights / np.sqrt(self.key_fiber.num_features)
                 edge_weights = edge_softmax(graph, edge_weights)
-                edge_weights = edge_weights * self.cutoff_function(graph.edata['rel_pos'], self.cutoff) 
+                edge_weights = edge_weights * self.cutoff_function(graph.edata['rel_pos'], self.cutoff)  # TRIP
                 edge_weights = edge_weights[..., None, None]
 
             with nvtx_range('weighted sum'):
@@ -128,7 +129,7 @@ class AttentionBlockSE3(nn.Module):
             max_degree: bool = 4,
             fuse_level: ConvSE3FuseLevel = ConvSE3FuseLevel.FULL,
             low_memory: bool = False,
-            cutoff: float = float('inf'),
+            cutoff: float = float('inf'),  # TRIP
             **kwargs
     ):
         """
@@ -155,7 +156,7 @@ class AttentionBlockSE3(nn.Module):
                                     use_layer_norm=use_layer_norm, max_degree=max_degree, fuse_level=fuse_level,
                                     allow_fused_output=True, low_memory=low_memory)
         self.to_query = LinearSE3(fiber_in, key_query_fiber)
-        self.attention = AttentionSE3(num_heads, key_query_fiber, value_fiber, cutoff)
+        self.attention = AttentionSE3(num_heads, key_query_fiber, value_fiber, cutoff) # TRIP
         self.project = LinearSE3(value_fiber + fiber_in, fiber_out)
 
     def forward(
