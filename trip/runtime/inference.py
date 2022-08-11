@@ -30,37 +30,39 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from se3_transformer.runtime import gpu_affinity
-from se3_transformer.runtime.arguments import PARSER
+from trip.runtime.arguments import PARSER
 from se3_transformer.runtime.callbacks import BaseCallback
 from se3_transformer.runtime.loggers import DLLogger, WandbLogger, LoggerCollection
 from se3_transformer.runtime.utils import to_cuda, get_local_rank
 
+from trip.runtime.callbacks import TrIPMetricCallback
 
-@torch.inference_mode()
+
 def evaluate(model: nn.Module,
              dataloader: DataLoader,
              callbacks: List[BaseCallback],
              args):
-    model.eval()
     for i, batch in tqdm(enumerate(dataloader), total=len(dataloader), unit='batch', desc=f'Evaluation',
                          leave=False, disable=(args.silent or get_local_rank() != 0)):
-        *input, target = to_cuda(batch)
+        *inputs, target = to_cuda(batch)
 
         for callback in callbacks:
             callback.on_batch_start()
 
         with torch.cuda.amp.autocast(enabled=args.amp):
-            pred = model(*input)
+            pred = model(inputs, create_graph=False)
 
             for callback in callbacks:
-                callback.on_validation_step(input, target, pred)
+                callback.on_validation_step(inputs, target, pred)
 
 
 if __name__ == '__main__':
-    from se3_transformer.runtime.callbacks import QM9MetricCallback, PerformanceCallback
+    from se3_transformer.runtime.callbacks import PerformanceCallback
+    from trip.runtime.callbacks import MetricCallback
     from se3_transformer.runtime.utils import init_distributed, seed_everything
-    from se3_transformer.model import SE3TransformerPooled, Fiber
-    from se3_transformer.data_loading import QM9DataModule
+    from se3_transformer.model import Fiber
+    from trip.model import TrIP
+    from trip.data_loading import ANI1xDataModule
     import torch.distributed as dist
     import logging
     import sys
@@ -89,18 +91,19 @@ if __name__ == '__main__':
 
     loggers = [DLLogger(save_dir=args.log_dir, filename=args.dllogger_name)]
     if args.wandb:
-        loggers.append(WandbLogger(name=f'QM9({args.task})', save_dir=args.log_dir, project='se3-transformer'))
+        loggers.append(WandbLogger(name=f'ANI1x', save_dir=args.log_dir, project='se3-transformer'))
     logger = LoggerCollection(loggers)
-    datamodule = QM9DataModule(**vars(args))
-    model = SE3TransformerPooled(
+    datamodule = ANI1xDataModule(**vars(args))
+    model = TrIP(
         fiber_in=Fiber({0: datamodule.NODE_FEATURE_DIM}),
         fiber_out=Fiber({0: args.num_degrees * args.num_channels}),
-        fiber_edge=Fiber({0: datamodule.EDGE_FEATURE_DIM}),
+        fiber_edge=Fiber({0: args.num_basis_fns}),
         output_dim=1,
         tensor_cores=(args.amp and major_cc >= 7) or major_cc >= 8,  # use Tensor Cores more effectively
         **vars(args)
     )
-    callbacks = [QM9MetricCallback(logger, targets_std=datamodule.targets_std, prefix='test')]
+    callbacks = [TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='energy'),
+                 TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='forces')]
 
     model.to(device=torch.cuda.current_device())
     if args.load_ckpt_path is not None:

@@ -30,7 +30,7 @@ import numpy as np
 import torch
 
 from se3_transformer.runtime.loggers import Logger
-from se3_transformer.runtime.metrics import MeanAbsoluteError, RootMeanSquaredError
+from se3_transformer.runtime.metrics import MeanAbsoluteError
 
 
 class BaseCallback(ABC):
@@ -58,46 +58,6 @@ class BaseCallback(ABC):
     def on_checkpoint_save(self, checkpoint):
         pass
 
-
-class ANI1xMetricCallback(BaseCallback):
-    """ Logs the recaled MAE and RMSE for ANI1x regression """
-
-    def __init__(self, logger, targets_std, prefix=''):
-        self.mae = MeanAbsoluteError()
-        self.rmse = RootMeanSquaredError()
-        self.logger = logger
-        self.targets_std = targets_std
-        self.prefix = prefix
-        self.best_mae = float('inf')
-        self.best_rmse = float('inf')
-
-    def on_validation_step(self, inputs, targets, preds):
-        if 'energy' in self.prefix:
-            pred = preds[0]
-            target = targets['energy']
-        elif 'forces' in self.prefix:
-            pred = preds[1]
-            target = targets['forces']
-        self.rmse(pred.detach(), target.detach())
-        self.mae(pred.detach(), target.detach())
-
-    def on_validation_end(self, epoch=None):
-        mae = self.mae.compute() * self.targets_std * 627.5
-        rmse = self.rmse.compute() * self.targets_std * 627.5
-        logging.info(f'{self.prefix} MAE: {mae}')
-        logging.info(f'{self.prefix} RMSE: {rmse}')
-        self.logger.log_metrics({f'{self.prefix} MAE': mae,
-                                 f'{self.prefix} RMSE': rmse}, epoch)
-        self.best_mae = min(self.best_mae, mae)
-        self.best_rmse = min(self.best_rmse, rmse) 
-
-    def on_fit_end(self):
-        if self.best_mae != float('inf'):
-            self.logger.log_metrics({f'{self.prefix} best MAE': self.best_mae})
-        if self.best_rmse != float('inf'):
-            self.logger.log_metrics({f'{self.prefix} best RMSE': self.best_rmse})
-
-
 class LRSchedulerCallback(BaseCallback):
     def __init__(self, logger: Optional[Logger] = None):
         self.logger = logger
@@ -121,14 +81,6 @@ class LRSchedulerCallback(BaseCallback):
         if self.logger is not None:
             self.logger.log_metrics({'learning rate': self.scheduler.get_last_lr()[0]}, step=self.scheduler.last_epoch)
         self.scheduler.step()
-
-
-class ANI1xLRSchedulerCallback(LRSchedulerCallback):
-    def __init__(self, logger):
-        super().__init__(logger)
-
-    def get_scheduler(self, optimizer, args):
-        return torch.optim.lr_scheduler.ExponentialLR(optimizer, args.gamma)
 
 
 class PerformanceCallback(BaseCallback):

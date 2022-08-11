@@ -25,7 +25,7 @@ import argparse
 import pathlib
 
 from trip.data_loading import ANI1xDataModule
-from trip.model import SE3TransformerANI1x
+from trip.model import TrIP
 from se3_transformer.runtime.utils import str2bool
 
 PARSER = argparse.ArgumentParser(description='SE(3)-Transformer')
@@ -69,4 +69,4 @@ PARSER.add_argument('--benchmark', type=str2bool, nargs='?', const=True, default
                     help='Benchmark mode')
 
 ANI1xDataModule.add_argparse_args(PARSER)
-SE3TransformerANI1x.add_argparse_args(PARSER)
+TrIP.add_argparse_args(PARSER)

@@ -36,14 +36,14 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
-from se3_transformer.data_loading import QM9DataModule
-from se3_transformer.model import SE3TransformerPooled
+from trip.data_loading import ANI1xDataModule
+from trip.model import TrIP
 from se3_transformer.model.fiber import Fiber
 from se3_transformer.runtime import gpu_affinity
-from se3_transformer.runtime.arguments import PARSER
-from se3_transformer.runtime.callbacks import QM9MetricCallback, QM9LRSchedulerCallback, BaseCallback, \
-    PerformanceCallback
-from se3_transformer.runtime.inference import evaluate
+from trip.runtime.arguments import PARSER
+from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback
+from se3_transformer.runtime.callbacks import BaseCallback, PerformanceCallback
+from trip.runtime.inference import evaluate
 from se3_transformer.runtime.loggers import LoggerCollection, DLLogger, WandbLogger, Logger
 from se3_transformer.runtime.utils import to_cuda, get_local_rank, init_distributed, seed_everything, \
     using_tensor_cores, increase_l2_fetch_granularity
@@ -82,7 +82,8 @@ def load_state(model: nn.Module, optimizer: Optimizer, path: pathlib.Path, callb
 
 
 def train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args):
-    losses = []
+    energy_losses = []
+    forces_losses = []
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
         *inputs, target = to_cuda(batch)
@@ -91,9 +92,11 @@ def train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimi
             callback.on_batch_start()
 
         with torch.cuda.amp.autocast(enabled=args.amp):
-            pred = model(*inputs)
-            loss = loss_fn(pred, target) / args.accumulate_grad_batches
-
+            pred = model(inputs)
+            energy_loss, forces_loss = loss_fn(pred, target)
+            energy_loss /= args.accumulate_grad_batches
+            forces_loss /= args.accumulate_grad_batches
+            loss = energy_loss + args.force_weight*forces_loss
         grad_scaler.scale(loss).backward()
 
         # gradient accumulation
@@ -106,9 +109,10 @@ def train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimi
             grad_scaler.update()
             model.zero_grad(set_to_none=True)
 
-        losses.append(loss.item())
+        energy_losses.append(energy_loss.item())
+        forces_losses.append(forces_loss.item())
 
-    return np.mean(losses)
+    return np.mean(energy_losses), np.mean(forces_losses) # Last batch may be smaller, making this a slightly-weighted average
 
 
 def train(model: nn.Module,
@@ -148,18 +152,23 @@ def train(model: nn.Module,
         if isinstance(train_dataloader.sampler, DistributedSampler):
             train_dataloader.sampler.set_epoch(epoch_idx)
 
-        loss = train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimizer, local_rank, callbacks,
+        energy_loss, forces_loss = train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimizer, local_rank, callbacks,
                            args)
         if dist.is_initialized():
-            loss = torch.tensor(loss, dtype=torch.float, device=device)
-            torch.distributed.all_reduce(loss)
-            loss = (loss / world_size).item()
+            energy_loss = torch.tensor(energy_loss, dtype=torch.float, device=device)
+            torch.distributed.all_reduce(energy_loss)
+            energy_loss = (energy_loss / world_size).item()
+            forces_loss = torch.tensor(forces_loss, dtype=torch.float, device=device)
+            torch.distributed.all_reduce(forces_loss)
+            forces_loss = (forces_loss / world_size).item()
 
-        logging.info(f'Train loss: {loss}')
-        logger.log_metrics({'train loss': loss}, epoch_idx)
+        energy_error = np.sqrt(energy_loss) * ANI1xDataModule.ENERGY_STD * 627.5
+        forces_error = np.sqrt(forces_loss) * ANI1xDataModule.ENERGY_STD * 627.5
 
-        if epoch_idx + 1 == args.epochs:
-            logger.log_metrics({'train loss': loss})
+        logging.info(f'Energy error: {energy_error}')
+        logging.info(f'Forces error: {forces_error}')
+        logger.log_metrics({'energy error': energy_error}, epoch_idx)
+        logger.log_metrics({'forces error': forces_error}, epoch_idx)
 
         for callback in callbacks:
             callback.on_epoch_end()
@@ -205,27 +214,28 @@ if __name__ == '__main__':
 
     loggers = [DLLogger(save_dir=args.log_dir, filename=args.dllogger_name)]
     if args.wandb:
-        loggers.append(WandbLogger(name=f'QM9({args.task})', save_dir=args.log_dir, project='se3-transformer'))
+        loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    datamodule = QM9DataModule(**vars(args))
-    model = SE3TransformerPooled(
+    datamodule = ANI1xDataModule(**vars(args))
+    model = TrIP(
         fiber_in=Fiber({0: datamodule.NODE_FEATURE_DIM}),
         fiber_out=Fiber({0: args.num_degrees * args.num_channels}),
-        fiber_edge=Fiber({0: datamodule.EDGE_FEATURE_DIM}),
+        fiber_edge=Fiber({0: args.num_basis_fns}),
         output_dim=1,
-        tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively
+        tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )
-    loss_fn = nn.L1Loss()
+    loss_fn = datamodule.loss_fn
 
     if args.benchmark:
         logging.info('Running benchmark mode')
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         callbacks = [PerformanceCallback(logger, args.batch_size * world_size)]
     else:
-        callbacks = [QM9MetricCallback(logger, targets_std=datamodule.targets_std, prefix='validation'),
-                     QM9LRSchedulerCallback(logger, epochs=args.epochs)]
+        callbacks = [TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='energy validation'),
+                     TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='forces validation'),
+                     TrIPLRSchedulerCallback(logger)]
 
     if is_distributed:
         gpu_affinity.set_affinity(gpu_id=get_local_rank(), nproc_per_node=torch.cuda.device_count())

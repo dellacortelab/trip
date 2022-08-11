@@ -5,7 +5,7 @@
 BATCH_SIZE=${1:-240}
 AMP=${2:-true}
 
-CUDA_VISIBLE_DEVICES=0 python -m se3_transformer.runtime.inference \
+CUDA_VISIBLE_DEVICES=0 python -m trip.runtime.inference \
   --amp "$AMP" \
   --batch_size "$BATCH_SIZE" \
   --cutoff 4.6 \

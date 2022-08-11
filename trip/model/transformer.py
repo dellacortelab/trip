@@ -69,11 +69,12 @@ class SE3Transformer(nn.Module):
                  channels_div: int,
                  fiber_edge: Fiber = Fiber({}),
                  return_type: Optional[int] = None,
-                 pooling: Optional[Literal['avg', 'max']] = None,
+                 pooling: Optional[Literal['avg', 'max', 'sum']] = None,
                  norm: bool = True,
                  use_layer_norm: bool = True,
                  tensor_cores: bool = False,
                  low_memory: bool = False,
+                 cutoff: float = float('inf'),
                  **kwargs):
         """
         :param num_layers:          Number of attention layers
@@ -84,7 +85,7 @@ class SE3Transformer(nn.Module):
         :param num_heads:           Number of attention heads
         :param channels_div:        Channels division before feeding to attention layer
         :param return_type:         Return only features of this type
-        :param pooling:             'avg' or 'max' graph pooling before MLP layers
+        :param pooling:             'avg', 'max', 'sum' graph pooling before MLP layers
         :param norm:                Apply a normalization layer after each attention block
         :param use_layer_norm:      Apply layer normalization between MLP layers
         :param tensor_cores:        True if using Tensor Cores (affects the use of fully fused convs, and padded bases)
@@ -100,6 +101,7 @@ class SE3Transformer(nn.Module):
         self.max_degree = max(*fiber_in.degrees, *fiber_hidden.degrees, *fiber_out.degrees)
         self.tensor_cores = tensor_cores
         self.low_memory = low_memory
+        self.cutoff = cutoff
 
         if low_memory:
             self.fuse_level = ConvSE3FuseLevel.NONE
@@ -117,7 +119,8 @@ class SE3Transformer(nn.Module):
                                                    use_layer_norm=use_layer_norm,
                                                    max_degree=self.max_degree,
                                                    fuse_level=self.fuse_level,
-                                                   low_memory=low_memory))
+                                                   low_memory=low_memory,
+                                                   cutoff=cutoff))
             if norm:
                 graph_modules.append(NormSE3(fiber_hidden))
             fiber_in = fiber_hidden
@@ -166,7 +169,7 @@ class SE3Transformer(nn.Module):
                             help='Number of heads in self-attention')
         parser.add_argument('--channels_div', type=int, default=2,
                             help='Channels division before feeding to attention layer')
-        parser.add_argument('--pooling', type=str, default=None, const=None, nargs='?', choices=['max', 'avg'],
+        parser.add_argument('--pooling', type=str, default='sum', const=None, nargs='?', choices=['max', 'avg', 'sum'],
                             help='Type of graph pooling')
         parser.add_argument('--norm', type=str2bool, nargs='?', const=True, default=False,
                             help='Apply a normalization layer after each attention block')
@@ -176,7 +179,6 @@ class SE3Transformer(nn.Module):
                             help='If true, will use fused ops that are slower but that use less memory '
                                  '(expect 25 percent less memory). '
                                  'Only has an effect if AMP is enabled on Volta GPUs, or if running on Ampere GPUs')
-
         return parser
 
 
@@ -220,4 +222,81 @@ class SE3TransformerPooled(nn.Module):
                             help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
                             type=int, default=4)
         parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=32)
+        return parent_parser
+
+
+class TrIP(nn.Module):
+    def __init__(self,
+                 fiber_in: Fiber,
+                 fiber_out: Fiber,
+                 fiber_edge: Fiber,
+                 num_degrees: int,
+                 num_channels: int,
+                 output_dim: int,
+                 cutoff: float,
+                 num_basis_fns: int,
+                 **kwargs):
+        super().__init__()
+        kwargs['pooling'] = kwargs['pooling'] or 'max'
+        self.transformer = SE3Transformer(
+            fiber_in=fiber_in,
+            fiber_hidden=Fiber.create(num_degrees, num_channels),
+            fiber_out=fiber_out,
+            fiber_edge=fiber_edge,
+            return_type=0,
+            **kwargs
+        )
+        self.cutoff = cutoff
+        self.num_basis_fns = num_basis_fns
+
+        n_out_features = fiber_out.num_features
+        self.mlp = nn.Sequential(
+            nn.Linear(n_out_features, n_out_features),
+            nn.ReLU(),
+            nn.Linear(n_out_features, output_dim)
+        )
+
+    def forward(self, inputs, forces=True, create_graph=True):
+        graph, node_feats, *basis = inputs
+        if forces==True:
+            graph.ndata['pos'].requires_grad = True
+            graph.edata['rel_pos'] = self._get_relative_pos(graph) # Calculate here so gradients go through the pos.
+            tr = self.transformer
+            basis = get_basis(graph.edata['rel_pos'], max_degree=tr.max_degree, compute_gradients=True,
+                                       use_pad_trick=tr.tensor_cores and not tr.low_memory,
+                                       amp=torch.is_autocast_enabled()
+            )
+        radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_basis_fns)
+        edge_feats = {'0': radial_basis[:,:,None]}
+        feats = self.transformer(graph, node_feats, edge_feats, basis).squeeze(-1)
+        energies = self.mlp(feats).squeeze(-1) 
+        if not forces:
+            return energies
+        forces = -torch.autograd.grad(torch.sum(energies),
+                                      graph.ndata['pos'],
+                                      create_graph=create_graph,
+                                     )[0]
+        return energies, forces
+
+    @staticmethod
+    def _get_relative_pos(graph: DGLGraph) -> Tensor:
+        x = graph.ndata['pos']
+        src, dst = graph.edges()
+        rel_pos = x[dst] - x[src]
+        return rel_pos
+
+    @staticmethod
+    def _get_radial_basis(graph, cutoff, num_basis_fns) -> Tensor:
+        rel_pos = graph.edata['rel_pos']
+        edge_dists = torch.norm(rel_pos, dim=1)
+        gaussian_centers = torch.linspace(0, cutoff, num_basis_fns, device=rel_pos.device)
+        dx = gaussian_centers[1] - gaussian_centers[0]
+        diffs = edge_dists[:,None] - gaussian_centers[None,:]
+        return torch.exp(-2 * diffs**2 / dx**2)
+
+    @staticmethod
+    def add_argparse_args(parent_parser):
+        parser = parent_parser.add_argument_group("Model architecture")
+        SE3TransformerPooled.add_argparse_args(parser)
+        parser.add_argument('--num_basis_fns', help='Number of radial basis functions', type=int, default=16)
         return parent_parser

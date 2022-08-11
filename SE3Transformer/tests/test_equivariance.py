@@ -23,7 +23,7 @@
 
 import torch
 
-from se3_transformer.model import SE3Transformer
+from trip.model import SE3Transformer
 from se3_transformer.model.fiber import Fiber
 
 if __package__ is None or __package__ == '':

@@ -1,1 +1,1 @@
-from .ani1x import ANI1xDataModule
+from .qm9 import QM9DataModule
