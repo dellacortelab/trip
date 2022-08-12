@@ -4,6 +4,7 @@ import pathlib
 from typing import List, Literal, Optional
 import h5py
 
+import torch
 from torch import Tensor
 
 
@@ -38,11 +39,11 @@ class TrIPContainer:
         forces_data = []
         box_size_data = []
         for molecule in group.values():
-            species_data.append(molecule['species'][:])
-            pos_data.append(molecule['pos'][:])
-            energy_data.append(molecule['energy'][:])
-            forces_data.append(molecule['forces'][:])
-            box_size_data.apend(molecule['box_size'][:])
+            species_data.append(torch.tensor(molecule['species'][:], dtype=torch.uint8))
+            pos_data.append(torch.tensor(molecule['pos'][:], dtype=torch.float32))
+            energy_data.append(torch.tensor(molecule['energy'][:], dtype=torch.float32))
+            forces_data.append(torch.tensor(molecule['forces'][:], dtype=torch.float32))
+            box_size_data.append(torch.tensor(molecule['box_size'][:], dtype=torch.float32))
         return species_data, pos_data, energy_data, forces_data, box_size_data
 
     def set_data(self, group_name: Literal['train', 'val', 'test'],
@@ -76,7 +77,7 @@ class TrIPContainer:
                 self.val_energy_data, self.val_forces_data, \
                 self.val_box_size_data
         elif name == 'test':
-            self.test_species_data, self.test_pos_data, \
+            return self.test_species_data, self.test_pos_data, \
                 self.test_energy_data, self.test_forces_data, \
                 self.test_box_size_data
 

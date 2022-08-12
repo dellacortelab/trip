@@ -24,7 +24,7 @@
 import argparse
 import pathlib
 
-from trip.data_loading import ANI1xDataModule
+from trip.data_loading import TrIPDataModule
 from trip.model import TrIP
 from se3_transformer.runtime.utils import str2bool
 
@@ -68,5 +68,5 @@ PARSER.add_argument('--wandb', type=str2bool, nargs='?', const=True, default=Fal
 PARSER.add_argument('--benchmark', type=str2bool, nargs='?', const=True, default=False,
                     help='Benchmark mode')
 
-ANI1xDataModule.add_argparse_args(PARSER)
+TrIPDataModule.add_argparse_args(PARSER)
 TrIP.add_argparse_args(PARSER)

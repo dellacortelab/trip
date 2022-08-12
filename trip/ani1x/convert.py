@@ -45,22 +45,25 @@ for num, molecule in enumerate(it):
     num_list.append(num)
 
 num_array = np.arange(num)
-train_idx = np.ma.compressed(np.ma.masked_where(num_array % 20 == 0, num_array))
-val_idx = np.ma.compressed(np.ma.masked_where(num_array % 20 != 0, num_array))
+train_idx = num_array[num_array % 20 == 0]
+val_idx = num_array[num_array %20 != 0]
 
 container = TrIPContainer()
 
 
 def idx_lists(idx_list, *value_lists):
     new_value_lists = []
-    for i, value_list in enumerate(value_lists):
-        new_value_lists.append([value_lists[i][j] for j in idx_list])
+    for value_list in value_lists:
+        new_value_lists.append([value_list[j] for j in idx_list])
     return new_value_lists
 
+box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf')) for pos_tensor in pos_data]
 
-container.set_data('train', *idx_lists(train_idx, species_data, pos_data, energy_data, forces_data))
-container.set_data('val', *idx_lists(val_idx, species_data, pos_data, energy_data, forces_data))
+container.set_data('train', *idx_lists(train_idx, species_data, pos_data, energy_data, forces_data, box_size_data))
+container.set_data('val', *idx_lists(val_idx, species_data, pos_data, energy_data, forces_data, box_size_data))
 
+
+# Do testing 
 species_data = []
 pos_data = []
 energy_data = []
@@ -81,7 +84,10 @@ for subdir in os.listdir(test_dir):
                     energy_data.append(torch.tensor(mol['energies'], dtype=torch.float))
                     forces_data.append(torch.tensor(np.array(mol['forces']), dtype=torch.float))
 
-container.set_data('test', species_data, pos_data, energy_data, forces_data)
+
+box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf')) for pos_tensor in pos_data]
+
+container.set_data('test', species_data, pos_data, energy_data, forces_data, box_size_data)
 save_path = os.path.join(data_dir, 'ani1x.trip')
 
 container.save_data(save_path)

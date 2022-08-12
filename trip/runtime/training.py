@@ -36,7 +36,6 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
-from trip.data_loading import ANI1xDataModule
 from trip.model import TrIP
 from se3_transformer.model.fiber import Fiber
 from se3_transformer.runtime import gpu_affinity
@@ -47,52 +46,26 @@ from trip.runtime.inference import evaluate
 from se3_transformer.runtime.loggers import LoggerCollection, DLLogger, WandbLogger, Logger
 from se3_transformer.runtime.utils import to_cuda, get_local_rank, init_distributed, seed_everything, \
     using_tensor_cores, increase_l2_fetch_granularity
+from trip.data_loading import GraphConstructor, TrIPDataModule
+
+from se3_transformer.runtime.training import save_state, load_state, print_parameters_count
 
 
-def save_state(model: nn.Module, optimizer: Optimizer, epoch: int, path: pathlib.Path, callbacks: List[BaseCallback]):
-    """ Saves model, optimizer and epoch states to path (only once per node) """
-    if get_local_rank() == 0:
-        state_dict = model.module.state_dict() if isinstance(model, DistributedDataParallel) else model.state_dict()
-        checkpoint = {
-            'state_dict': state_dict,
-            'optimizer_state_dict': optimizer.state_dict(),
-            'epoch': epoch
-        }
-        for callback in callbacks:
-            callback.on_checkpoint_save(checkpoint)
-
-        torch.save(checkpoint, str(path))
-        logging.info(f'Saved checkpoint to {str(path)}')
-
-
-def load_state(model: nn.Module, optimizer: Optimizer, path: pathlib.Path, callbacks: List[BaseCallback]):
-    """ Loads model, optimizer and epoch states from path """
-    checkpoint = torch.load(str(path), map_location={'cuda:0': f'cuda:{get_local_rank()}'})
-    if isinstance(model, DistributedDataParallel):
-        model.module.load_state_dict(checkpoint['state_dict'])
-    else:
-        model.load_state_dict(checkpoint['state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-    for callback in callbacks:
-        callback.on_checkpoint_load(checkpoint)
-
-    logging.info(f'Loaded checkpoint from {str(path)}')
-    return checkpoint['epoch']
-
-
-def train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args):
+def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
+                grad_scaler, optimizer, local_rank, callbacks, args):
     energy_losses = []
     forces_losses = []
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
-        *inputs, target = to_cuda(batch)
+        species, pos_list, box_size_list, target = to_cuda(batch)
+        graph = graph_constructor.create_graphs(pos_list, box_size_list)
+        graph.edata['species'] = species
 
         for callback in callbacks:
             callback.on_batch_start()
 
         with torch.cuda.amp.autocast(enabled=args.amp):
-            pred = model(inputs)
+            pred = model(graph, create_graph=True)
             energy_loss, forces_loss = loss_fn(pred, target)
             energy_loss /= args.accumulate_grad_batches
             forces_loss /= args.accumulate_grad_batches
@@ -112,13 +85,15 @@ def train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimi
         energy_losses.append(energy_loss.item())
         forces_losses.append(forces_loss.item())
 
-    return np.mean(energy_losses), np.mean(forces_losses) # Last batch may be smaller, making this a slightly-weighted average
+    return np.mean(energy_losses), np.mean(forces_losses)
 
 
 def train(model: nn.Module,
+          graph_constructor: GraphConstructor,
           loss_fn: _Loss,
           train_dataloader: DataLoader,
           val_dataloader: DataLoader,
+          energy_std: float,
           callbacks: List[BaseCallback],
           logger: Logger,
           args):
@@ -152,8 +127,8 @@ def train(model: nn.Module,
         if isinstance(train_dataloader.sampler, DistributedSampler):
             train_dataloader.sampler.set_epoch(epoch_idx)
 
-        energy_loss, forces_loss = train_epoch(model, train_dataloader, loss_fn, epoch_idx, grad_scaler, optimizer, local_rank, callbacks,
-                           args)
+        energy_loss, forces_loss = train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
+                                               grad_scaler, optimizer, local_rank, callbacks, args)
         if dist.is_initialized():
             energy_loss = torch.tensor(energy_loss, dtype=torch.float, device=device)
             torch.distributed.all_reduce(energy_loss)
@@ -162,11 +137,12 @@ def train(model: nn.Module,
             torch.distributed.all_reduce(forces_loss)
             forces_loss = (forces_loss / world_size).item()
 
-        energy_error = np.sqrt(energy_loss) * ANI1xDataModule.ENERGY_STD * 627.5
-        forces_error = np.sqrt(forces_loss) * ANI1xDataModule.ENERGY_STD * 627.5
+        factor = energy_std * 627.5
+        energy_error = np.sqrt(energy_loss) * factor
+        forces_error = np.sqrt(forces_loss) * factor
 
-        logging.info(f'Energy error: {energy_error}')
-        logging.info(f'Forces error: {forces_error}')
+        logging.info(f'Energy error: {energy_error:.3f}')
+        logging.info(f'Forces error: {forces_error:.3f}')
         logger.log_metrics({'energy error': energy_error}, epoch_idx)
         logger.log_metrics({'forces error': forces_error}, epoch_idx)
 
@@ -191,12 +167,6 @@ def train(model: nn.Module,
     for callback in callbacks:
         callback.on_fit_end()
 
-
-def print_parameters_count(model):
-    num_params_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f'Number of trainable parameters: {num_params_trainable}')
-
-
 if __name__ == '__main__':
     is_distributed = init_distributed()
     local_rank = get_local_rank()
@@ -204,7 +174,7 @@ if __name__ == '__main__':
 
     logging.getLogger().setLevel(logging.CRITICAL if local_rank != 0 or args.silent else logging.INFO)
 
-    logging.info('====== SE(3)-Transformer ======')
+    logging.info('============ TrIP =============')
     logging.info('|      Training procedure     |')
     logging.info('===============================')
 
@@ -217,7 +187,10 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    datamodule = ANI1xDataModule(**vars(args))
+    datamodule = TrIPDataModule(**vars(args))
+    energy_std = datamodule.get_energy_std()
+
+    graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP(
         fiber_in=Fiber({0: datamodule.NODE_FEATURE_DIM}),
         fiber_out=Fiber({0: args.num_degrees * args.num_channels}),
@@ -233,8 +206,8 @@ if __name__ == '__main__':
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         callbacks = [PerformanceCallback(logger, args.batch_size * world_size)]
     else:
-        callbacks = [TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='energy validation'),
-                     TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='forces validation'),
+        callbacks = [TrIPMetricCallback(logger, targets_std=energy_std, prefix='energy validation'),
+                     TrIPMetricCallback(logger, targets_std=energy_std, prefix='forces validation'),
                      TrIPLRSchedulerCallback(logger)]
 
     if is_distributed:
@@ -247,6 +220,7 @@ if __name__ == '__main__':
           loss_fn,
           datamodule.train_dataloader(),
           datamodule.val_dataloader(),
+          energy_std,
           callbacks,
           logger,
           args)

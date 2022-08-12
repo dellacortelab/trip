@@ -52,18 +52,19 @@ class TrIPMetricCallback(BaseCallback):
     def on_validation_step(self, inputs, targets, preds):
         if 'energy' in self.prefix:
             pred = preds[0]
-            target = targets['energy']
+            target = targets[0]
         elif 'forces' in self.prefix:
             pred = preds[1]
-            target = targets['forces']
+            target = targets[1]
         self.rmse(pred.detach(), target.detach())
         self.mae(pred.detach(), target.detach())
 
     def on_validation_end(self, epoch=None):
-        mae = self.mae.compute() * self.targets_std * 627.5
-        rmse = self.rmse.compute() * self.targets_std * 627.5
-        logging.info(f'{self.prefix} MAE: {mae}')
-        logging.info(f'{self.prefix} RMSE: {rmse}')
+        factor = self.targets_std * 627.5
+        mae = self.mae.compute() * factor
+        rmse = self.rmse.compute() * factor
+        logging.info(f'{self.prefix} MAE: {mae:.3f}')
+        logging.info(f'{self.prefix} RMSE: {rmse:.3f}')
         self.logger.log_metrics({f'{self.prefix} MAE': mae,
                                  f'{self.prefix} RMSE': rmse}, epoch)
         self.best_mae = min(self.best_mae, mae)

@@ -30,30 +30,34 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from se3_transformer.runtime import gpu_affinity
-from trip.runtime.arguments import PARSER
 from se3_transformer.runtime.callbacks import BaseCallback
 from se3_transformer.runtime.loggers import DLLogger, WandbLogger, LoggerCollection
 from se3_transformer.runtime.utils import to_cuda, get_local_rank
 
+from trip.data_loading import GraphConstructor
+from trip.runtime.arguments import PARSER
 from trip.runtime.callbacks import TrIPMetricCallback
 
 
 def evaluate(model: nn.Module,
+             graph_constructor: GraphConstructor,
              dataloader: DataLoader,
              callbacks: List[BaseCallback],
              args):
     for i, batch in tqdm(enumerate(dataloader), total=len(dataloader), unit='batch', desc=f'Evaluation',
                          leave=False, disable=(args.silent or get_local_rank() != 0)):
-        *inputs, target = to_cuda(batch)
+        species, pos_list, box_size_list, target = to_cuda(batch)
+        graph = graph_constructor.create_graphs(pos_list, box_size_list)
+        graph.edata['species'] = species
 
         for callback in callbacks:
             callback.on_batch_start()
 
         with torch.cuda.amp.autocast(enabled=args.amp):
-            pred = model(inputs, create_graph=False)
+            pred = model(graph, create_graph=True)
 
             for callback in callbacks:
-                callback.on_validation_step(inputs, target, pred)
+                callback.on_validation_step(graph, target, pred)
 
 
 if __name__ == '__main__':

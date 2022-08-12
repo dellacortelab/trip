@@ -34,9 +34,9 @@ class AtomicData:
         ionization_energies = fetch_ionization_energies(degree=list(range(1,N+1))).head(N)  # Fetch ionization energies in eV
         ie_array = np.tril(ionization_energies.to_numpy())  # Convert from dataframe to numpy array
         si_energies = np.sum(ie_array, axis=1)  # Add all ionization energies for each element to get self interation energy
-        sie_tensor = torch.from_numpy(si_energies)
-        sie_tensor /= 27.211_386_245_988_53  # Convert from eV to Ha: https://physics.nist.gov/cgi-bin/cuu/Value?hrev
-        return sie_tensor
+        si_tensor = torch.from_numpy(si_energies)
+        si_tensor /= 27.211_386_245_988_53  # Convert from eV to Ha: https://physics.nist.gov/cgi-bin/cuu/Value?hrev
+        return si_tensor
 
     @staticmethod
     def get_atomic_symbols_list(N=100):
