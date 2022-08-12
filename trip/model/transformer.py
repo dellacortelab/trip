@@ -220,7 +220,7 @@ class SE3TransformerPooled(nn.Module):
         SE3Transformer.add_argparse_args(parser)
         parser.add_argument('--num_degrees',
                             help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
-                            type=int, default=4)
+                            type=int, default=3)
         parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=32)
         return parent_parser
 

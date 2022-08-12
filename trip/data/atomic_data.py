@@ -21,38 +21,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
 # SPDX-License-Identifier: MIT
 
-# run docker daemon with --default-runtime=nvidia for GPU detection during build
-# multistage build for DGL with CUDA and FP16
 
-ARG FROM_IMAGE_NAME=nvcr.io/nvidia/pytorch:21.07-py3
+import numpy as np
+import torch
+from mendeleev.fetch import fetch_ionization_energies
+from mendeleev import element
 
-FROM ${FROM_IMAGE_NAME} AS dgl_builder
+class AtomicData:
+    @staticmethod
+    def get_si_energies(N=100):
+        '''Get atomic self-interactino energies'''
+        ionization_energies = fetch_ionization_energies(degree=list(range(1,N+1))).head(N)  # Fetch ionization energies in eV
+        ie_array = np.tril(ionization_energies.to_numpy())  # Convert from dataframe to numpy array
+        si_energies = np.sum(ie_array, axis=1)  # Add all ionization energies for each element to get self interation energy
+        sie_tensor = torch.from_numpy(si_energies)
+        sie_tensor /= 27.211_386_245_988_53  # Convert from eV to Ha: https://physics.nist.gov/cgi-bin/cuu/Value?hrev
+        return sie_tensor
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
-    && apt-get install -y git build-essential python3-dev make cmake \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /dgl
-RUN git clone --branch v0.7.0 --recurse-submodules --depth 1 https://github.com/dmlc/dgl.git .
-RUN sed -i 's/"35 50 60 70"/"60 70 80"/g' cmake/modules/CUDA.cmake
-WORKDIR build
-RUN cmake -DUSE_CUDA=ON -DUSE_FP16=ON ..
-RUN make -j8
-
-
-FROM ${FROM_IMAGE_NAME}
-
-WORKDIR /workspace/trip
-
-# copy built DGL and install it
-COPY --from=dgl_builder /dgl ./dgl
-RUN cd dgl/python && python setup.py install && cd ../.. && rm -rf dgl
-
-ADD requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-ADD . .
-
-ENV DGLBACKEND=pytorch
-ENV OMP_NUM_THREADS=1
-
-RUN cp -r SE3Transformer/se3_transformer .
+    @staticmethod
+    def get_atomic_symbols_list(N=100):
+        return [element[i].symbol for i in range(1,N+1)]
