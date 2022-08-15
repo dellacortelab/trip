@@ -59,7 +59,7 @@ def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
         species, pos_list, box_size_list, target = to_cuda(batch)
         graph = graph_constructor.create_graphs(pos_list, box_size_list)
-        graph.edata['species'] = species
+        graph.ndata['species'] = species
 
         for callback in callbacks:
             callback.on_batch_start()
@@ -155,7 +155,7 @@ def train(model: nn.Module,
 
         if not args.benchmark and (
                 (args.eval_interval > 0 and (epoch_idx + 1) % args.eval_interval == 0) or epoch_idx + 1 == args.epochs):
-            evaluate(model, val_dataloader, callbacks, args)
+            evaluate(model, graph_constructor, val_dataloader, callbacks, args)
             model.train()
 
             for callback in callbacks:
@@ -188,11 +188,11 @@ if __name__ == '__main__':
     logger = LoggerCollection(loggers)
 
     datamodule = TrIPDataModule(**vars(args))
-    energy_std = datamodule.get_energy_std()
+    energy_std = datamodule.get_energy_std().item()
 
     graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP(
-        fiber_in=Fiber({0: datamodule.NODE_FEATURE_DIM}),
+        fiber_in=Fiber({0: args.num_channels}),
         fiber_out=Fiber({0: args.num_degrees * args.num_channels}),
         fiber_edge=Fiber({0: args.num_basis_fns}),
         output_dim=1,
@@ -217,6 +217,7 @@ if __name__ == '__main__':
     logger.log_hyperparams(vars(args))
     increase_l2_fetch_granularity()
     train(model,
+          graph_constructor,
           loss_fn,
           datamodule.train_dataloader(),
           datamodule.val_dataloader(),

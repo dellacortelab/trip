@@ -48,7 +48,7 @@ def evaluate(model: nn.Module,
                          leave=False, disable=(args.silent or get_local_rank() != 0)):
         species, pos_list, box_size_list, target = to_cuda(batch)
         graph = graph_constructor.create_graphs(pos_list, box_size_list)
-        graph.edata['species'] = species
+        graph.ndata['species'] = species
 
         for callback in callbacks:
             callback.on_batch_start()

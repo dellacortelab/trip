@@ -73,8 +73,8 @@ class GraphConstructor:
         rel_pos = pos[dst] - pos[src]
 
         # Fix the rel_pos for boxes using PBC
-        num_nodes = dgl.batch_num_node()
-        cum_num_nodes = torch.cumsum(num_nodes)
+        num_nodes = batched_graph.batch_num_nodes()
+        cum_num_nodes = torch.cumsum(num_nodes, dim=0)
         for i, box_size in enumerate(box_size_list):
             if not torch.isinf(box_size).all():  # Check if subgraph is periodic
                 stop = cum_num_nodes[i]

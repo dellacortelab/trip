@@ -39,7 +39,7 @@ class TrIPContainer:
         forces_data = []
         box_size_data = []
         for molecule in group.values():
-            species_data.append(torch.tensor(molecule['species'][:], dtype=torch.uint8))
+            species_data.append(torch.tensor(molecule['species'][:], dtype=torch.long))
             pos_data.append(torch.tensor(molecule['pos'][:], dtype=torch.float32))
             energy_data.append(torch.tensor(molecule['energy'][:], dtype=torch.float32))
             forces_data.append(torch.tensor(molecule['forces'][:], dtype=torch.float32))
@@ -103,8 +103,3 @@ class TrIPContainer:
             molecule.create_dataset('forces', data=forces_data[i])
             molecule.create_dataset('box_size', data=box_size_data[i])
 
-    def get_species_list(self):
-        species = set()
-        for species_list in self.train_species_data:
-            species.union(set(species_list.tolist()))
-        return list(species)

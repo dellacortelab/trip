@@ -55,4 +55,4 @@ ADD . .
 ENV DGLBACKEND=pytorch
 ENV OMP_NUM_THREADS=1
 
-RUN cp -r SE3Transformer/se3_transformer .
+RUN mv SE3Transformer/se3_transformer .

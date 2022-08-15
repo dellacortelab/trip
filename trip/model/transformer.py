@@ -248,7 +248,7 @@ class TrIP(nn.Module):
         )
         self.cutoff = cutoff
         self.num_basis_fns = num_basis_fns
-
+        self.embedding = nn.Embedding(100, fiber_in.num_features)
         n_out_features = fiber_out.num_features
         self.mlp = nn.Sequential(
             nn.Linear(n_out_features, n_out_features),
@@ -256,18 +256,17 @@ class TrIP(nn.Module):
             nn.Linear(n_out_features, output_dim)
         )
 
-    def forward(self, inputs, forces=True, create_graph=True):
-        graph, node_feats, *basis = inputs
+    def forward(self, graph, forces=True, create_graph=True):
         if forces==True:
             graph.ndata['pos'].requires_grad = True
-            graph.edata['rel_pos'] = self._get_relative_pos(graph) # Calculate here so gradients go through the pos.
             tr = self.transformer
             basis = get_basis(graph.edata['rel_pos'], max_degree=tr.max_degree, compute_gradients=True,
                                        use_pad_trick=tr.tensor_cores and not tr.low_memory,
                                        amp=torch.is_autocast_enabled()
             )
         radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_basis_fns)
-        edge_feats = {'0': radial_basis[:,:,None]}
+        node_feats = {'0': self.embedding(graph.ndata['species']).unsqueeze(-1)}
+        edge_feats = {'0': radial_basis.unsqueeze(-1)}
         feats = self.transformer(graph, node_feats, edge_feats, basis).squeeze(-1)
         energies = self.mlp(feats).squeeze(-1) 
         if not forces:
@@ -275,7 +274,7 @@ class TrIP(nn.Module):
         forces = -torch.autograd.grad(torch.sum(energies),
                                       graph.ndata['pos'],
                                       create_graph=create_graph,
-                                     )[0]
+                                      )[0]
         return energies, forces
 
     @staticmethod

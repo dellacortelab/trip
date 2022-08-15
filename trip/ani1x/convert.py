@@ -38,15 +38,15 @@ num_list = []
 file_path = '/results/ani1xrelease.h5'
 it = iter_data_buckets(file_path, keys=['wb97x_dz.forces', 'wb97x_dz.energy'])
 for num, molecule in enumerate(it):
-    species_data.append(torch.tensor(molecule['atomic_numbers'], dtype=torch.int))
-    pos_data.append(torch.tensor(molecule['coordinates'], dtype=torch.float))
-    energy_data.append(torch.tensor(molecule['wb97x_dz.energy'], dtype=torch.float))
-    forces_data.append(torch.tensor(molecule['wb97x_dz.forces'], dtype=torch.float))
+    species_data.append(torch.tensor(molecule['atomic_numbers'], dtype=torch.long))
+    pos_data.append(torch.tensor(molecule['coordinates'], dtype=torch.float32))
+    energy_data.append(torch.tensor(molecule['wb97x_dz.energy'], dtype=torch.float32))
+    forces_data.append(torch.tensor(molecule['wb97x_dz.forces'], dtype=torch.float32))
     num_list.append(num)
 
 num_array = np.arange(num)
-train_idx = num_array[num_array % 20 == 0]
-val_idx = num_array[num_array %20 != 0]
+train_idx = num_array[num_array % 20 != 0]
+val_idx = num_array[num_array % 20 == 0]
 
 container = TrIPContainer()
 
@@ -57,7 +57,7 @@ def idx_lists(idx_list, *value_lists):
         new_value_lists.append([value_list[j] for j in idx_list])
     return new_value_lists
 
-box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf')) for pos_tensor in pos_data]
+box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]
 
 container.set_data('train', *idx_lists(train_idx, species_data, pos_data, energy_data, forces_data, box_size_data))
 container.set_data('val', *idx_lists(val_idx, species_data, pos_data, energy_data, forces_data, box_size_data))
@@ -79,13 +79,13 @@ for subdir in os.listdir(test_dir):
         with h5py.File(filepath, 'r') as f:
             for main in f.values():
                 for mol in main.values():
-                    species_data.append(torch.tensor([species_dict[atom] for atom in mol['species']], dtype=torch.int))
-                    pos_data.append(torch.tensor(np.array(mol['coordinates']), dtype=torch.float))
-                    energy_data.append(torch.tensor(mol['energies'], dtype=torch.float))
-                    forces_data.append(torch.tensor(np.array(mol['forces']), dtype=torch.float))
+                    species_data.append(torch.tensor([species_dict[atom] for atom in mol['species']], dtype=torch.long))
+                    pos_data.append(torch.tensor(np.array(mol['coordinates']), dtype=torch.float32))
+                    energy_data.append(torch.tensor(mol['energies'], dtype=torch.float32))
+                    forces_data.append(torch.tensor(np.array(mol['forces']), dtype=torch.float32))
 
 
-box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf')) for pos_tensor in pos_data]
+box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]
 
 container.set_data('test', species_data, pos_data, energy_data, forces_data, box_size_data)
 save_path = os.path.join(data_dir, 'ani1x.trip')
