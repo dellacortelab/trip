@@ -192,10 +192,6 @@ if __name__ == '__main__':
 
     graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP(
-        fiber_in=Fiber({0: args.num_channels}),
-        fiber_out=Fiber({0: args.num_degrees * args.num_channels}),
-        fiber_edge=Fiber({0: args.num_basis_fns}),
-        output_dim=1,
         tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )

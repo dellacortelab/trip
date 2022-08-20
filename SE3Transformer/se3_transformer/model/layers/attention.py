@@ -45,7 +45,6 @@ class AttentionSE3(nn.Module):
             num_heads: int,
             key_fiber: Fiber,
             value_fiber: Fiber,
-            cutoff: float  # TRIP
     ):
         """
         :param num_heads:     Number of attention heads
@@ -56,23 +55,14 @@ class AttentionSE3(nn.Module):
         self.num_heads = num_heads
         self.key_fiber = key_fiber
         self.value_fiber = value_fiber
-        self.cutoff = cutoff  # TRIP
-
-    @staticmethod
-    def cutoff_function(rel_pos, cutoff=float('inf')):
-        # TRIP
-        dist = torch.norm(rel_pos, p=2, dim=1)
-        bump = torch.zeros_like(dist)
-        f = lambda x : 0.5*torch.cos(np.pi*x) + 0.5
-        bump[dist<cutoff] = f(dist[dist<cutoff]/cutoff)
-        return bump[:,None]
 
     def forward(
             self,
             value: Union[Tensor, Dict[str, Tensor]],  # edge features (may be fused)
             key: Union[Tensor, Dict[str, Tensor]],  # edge features (may be fused)
             query: Dict[str, Tensor],  # node features
-            graph: DGLGraph
+            graph: DGLGraph,
+            scale: Tensor  # TrIP
     ):
         with nvtx_range('AttentionSE3'):
             with nvtx_range('reshape keys and queries'):
@@ -91,8 +81,9 @@ class AttentionSE3(nn.Module):
                 # Compute attention weights (softmax of inner product between key and query)
                 edge_weights = dgl.ops.e_dot_v(graph, key, query).squeeze(-1)
                 edge_weights = edge_weights / np.sqrt(self.key_fiber.num_features)
+                edge_weights += scale  # TrIP
                 edge_weights = edge_softmax(graph, edge_weights)
-                edge_weights = edge_weights * self.cutoff_function(graph.edata['rel_pos'], self.cutoff)  # TRIP
+                #edge_weights = edge_weights * scale  # TrIP
                 edge_weights = edge_weights[..., None, None]
 
             with nvtx_range('weighted sum'):
@@ -129,7 +120,6 @@ class AttentionBlockSE3(nn.Module):
             max_degree: bool = 4,
             fuse_level: ConvSE3FuseLevel = ConvSE3FuseLevel.FULL,
             low_memory: bool = False,
-            cutoff: float = float('inf'),  # TRIP
             **kwargs
     ):
         """
@@ -156,7 +146,7 @@ class AttentionBlockSE3(nn.Module):
                                     use_layer_norm=use_layer_norm, max_degree=max_degree, fuse_level=fuse_level,
                                     allow_fused_output=True, low_memory=low_memory)
         self.to_query = LinearSE3(fiber_in, key_query_fiber)
-        self.attention = AttentionSE3(num_heads, key_query_fiber, value_fiber, cutoff) # TRIP
+        self.attention = AttentionSE3(num_heads, key_query_fiber, value_fiber)
         self.project = LinearSE3(value_fiber + fiber_in, fiber_out)
 
     def forward(
@@ -164,7 +154,8 @@ class AttentionBlockSE3(nn.Module):
             node_features: Dict[str, Tensor],
             edge_features: Dict[str, Tensor],
             graph: DGLGraph,
-            basis: Dict[str, Tensor]
+            basis: Dict[str, Tensor],
+            scale: Tensor,
     ):
         with nvtx_range('AttentionBlockSE3'):
             with nvtx_range('keys / values'):
@@ -174,7 +165,7 @@ class AttentionBlockSE3(nn.Module):
             with nvtx_range('queries'):
                 query = self.to_query(node_features)
 
-            z = self.attention(value, key, query, graph)
+            z = self.attention(value, key, query, graph, scale)  # TrIP
             z_concat = aggregate_residual(node_features, z, 'cat')
             return self.project(z_concat)
 
