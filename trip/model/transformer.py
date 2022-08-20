@@ -168,14 +168,14 @@ class TrIP(nn.Module):
             **kwargs
         )
         self.embedding = nn.Embedding(100, num_channels)
-        self.mlp = self._make_mlp_layers(kwargs['num_layers'],
-                                         self.num_out_channels,
-                                         kwargs['use_layer_norm'])
+        self.mlp = self._make_mlp(kwargs['num_layers'],
+                                  self.num_out_channels,
+                                  kwargs['use_layer_norm'])
 
         self.pooling = SumPoolingEdges()
 
         
-    def _make_mlp_layers(self, num_layers, num_feats, use_layer_norm):
+    def _make_mlp(self, num_layers, num_feats, use_layer_norm):
         mlp_layers = []
         for _ in range(num_layers-1):
             mlp_layers.append(nn.Linear(num_feats, num_feats))
