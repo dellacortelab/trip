@@ -37,29 +37,11 @@ from se3_transformer.model.layers.pooling import GPooling
 from se3_transformer.runtime.utils import str2bool
 from se3_transformer.model.fiber import Fiber
 
-
-class Sequential(nn.Sequential):
-    """ Sequential module with arbitrary forward args and kwargs. Used to pass graph, basis and edge features. """
-
-    def forward(self, input, *args, **kwargs):
-        for module in self:
-            input = module(input, *args, **kwargs)
-        return input
+from dgl.nn import SumPooling
+from se3_transformer.model.transformer import Sequential, get_populated_edge_features
 
 
-def get_populated_edge_features(relative_pos: Tensor, edge_features: Optional[Dict[str, Tensor]] = None):
-    """ Add relative positions to existing edge features """
-    edge_features = edge_features.copy() if edge_features else {}
-    r = relative_pos.norm(dim=-1, keepdim=True)
-    if '0' in edge_features:
-        edge_features['0'] = torch.cat([edge_features['0'], r[..., None]], dim=1)
-    else:
-        edge_features['0'] = r[..., None]
-
-    return edge_features
-
-
-class SE3Transformer(nn.Module):
+class SE3TransformerTrIP(nn.Module):
     def __init__(self,
                  num_layers: int,
                  fiber_in: Fiber,
@@ -68,8 +50,6 @@ class SE3Transformer(nn.Module):
                  num_heads: int,
                  channels_div: int,
                  fiber_edge: Fiber = Fiber({}),
-                 return_type: Optional[int] = None,
-                 pooling: Optional[Literal['avg', 'max', 'sum']] = None,
                  norm: bool = True,
                  use_layer_norm: bool = True,
                  tensor_cores: bool = False,
@@ -84,8 +64,6 @@ class SE3Transformer(nn.Module):
         :param fiber_edge:          Input edge fiber description
         :param num_heads:           Number of attention heads
         :param channels_div:        Channels division before feeding to attention layer
-        :param return_type:         Return only features of this type
-        :param pooling:             'avg', 'max', 'sum' graph pooling before MLP layers
         :param norm:                Apply a normalization layer after each attention block
         :param use_layer_norm:      Apply layer normalization between MLP layers
         :param tensor_cores:        True if using Tensor Cores (affects the use of fully fused convs, and padded bases)
@@ -96,8 +74,6 @@ class SE3Transformer(nn.Module):
         self.fiber_edge = fiber_edge
         self.num_heads = num_heads
         self.channels_div = channels_div
-        self.return_type = return_type
-        self.pooling = pooling
         self.max_degree = max(*fiber_in.degrees, *fiber_hidden.degrees, *fiber_out.degrees)
         self.tensor_cores = tensor_cores
         self.low_memory = low_memory
@@ -133,9 +109,7 @@ class SE3Transformer(nn.Module):
                                      max_degree=self.max_degree))
         self.graph_modules = Sequential(*graph_modules)
 
-        if pooling is not None:
-            assert return_type is not None, 'return_type must be specified when pooling'
-            self.pooling_module = GPooling(pool=pooling, feat_type=return_type)
+        self.pooling = SumPooling()
 
     def forward(self, graph: DGLGraph, node_feats: Dict[str, Tensor],
                 edge_feats: Optional[Dict[str, Tensor]] = None,
@@ -153,13 +127,7 @@ class SE3Transformer(nn.Module):
 
         node_feats = self.graph_modules(node_feats, edge_feats, graph=graph, basis=basis)
 
-        if self.pooling is not None:
-            return self.pooling_module(node_feats, graph=graph)
-
-        if self.return_type is not None:
-            return node_feats[str(self.return_type)]
-
-        return node_feats
+        return self.pooling(graph, node_feats['0'])
 
     @staticmethod
     def add_argparse_args(parser):
@@ -169,8 +137,6 @@ class SE3Transformer(nn.Module):
                             help='Number of heads in self-attention')
         parser.add_argument('--channels_div', type=int, default=2,
                             help='Channels division before feeding to attention layer')
-        parser.add_argument('--pooling', type=str, default='sum', const=None, nargs='?', choices=['max', 'avg', 'sum'],
-                            help='Type of graph pooling')
         parser.add_argument('--norm', type=str2bool, nargs='?', const=True, default=False,
                             help='Apply a normalization layer after each attention block')
         parser.add_argument('--use_layer_norm', type=str2bool, nargs='?', const=True, default=False,
@@ -182,78 +148,29 @@ class SE3Transformer(nn.Module):
         return parser
 
 
-class SE3TransformerPooled(nn.Module):
-    def __init__(self,
-                 fiber_in: Fiber,
-                 fiber_out: Fiber,
-                 fiber_edge: Fiber,
-                 num_degrees: int,
-                 num_channels: int,
-                 output_dim: int,
-                 **kwargs):
-        super().__init__()
-        kwargs['pooling'] = kwargs['pooling'] or 'max'
-        self.transformer = SE3Transformer(
-            fiber_in=fiber_in,
-            fiber_hidden=Fiber.create(num_degrees, num_channels),
-            fiber_out=fiber_out,
-            fiber_edge=fiber_edge,
-            return_type=0,
-            **kwargs
-        )
-
-        n_out_features = fiber_out.num_features
-        self.mlp = nn.Sequential(
-            nn.Linear(n_out_features, n_out_features),
-            nn.ReLU(),
-            nn.Linear(n_out_features, output_dim)
-        )
-
-    def forward(self, graph, node_feats, edge_feats, basis=None):
-        feats = self.transformer(graph, node_feats, edge_feats, basis).squeeze(-1)
-        y = self.mlp(feats).squeeze(-1)
-        return y
-
-    @staticmethod
-    def add_argparse_args(parent_parser):
-        parser = parent_parser.add_argument_group("Model architecture")
-        SE3Transformer.add_argparse_args(parser)
-        parser.add_argument('--num_degrees',
-                            help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
-                            type=int, default=3)
-        parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=32)
-        return parent_parser
-
-
 class TrIP(nn.Module):
     def __init__(self,
-                 fiber_in: Fiber,
-                 fiber_out: Fiber,
-                 fiber_edge: Fiber,
                  num_degrees: int,
                  num_channels: int,
-                 output_dim: int,
-                 cutoff: float,
                  num_basis_fns: int,
+                 cutoff: float,
                  **kwargs):
         super().__init__()
-        kwargs['pooling'] = kwargs['pooling'] or 'max'
-        self.transformer = SE3Transformer(
-            fiber_in=fiber_in,
+        self.transformer = SE3TransformerTrIP(
+            fiber_in=Fiber({0: num_channels}),
             fiber_hidden=Fiber.create(num_degrees, num_channels),
-            fiber_out=fiber_out,
-            fiber_edge=fiber_edge,
-            return_type=0,
+            fiber_out=Fiber({0: num_degrees * num_channels}),
+            fiber_edge=Fiber({0: num_basis_fns}),
             **kwargs
         )
         self.cutoff = cutoff
         self.num_basis_fns = num_basis_fns
-        self.embedding = nn.Embedding(100, fiber_in.num_features)
-        n_out_features = fiber_out.num_features
+        self.embedding = nn.Embedding(100, num_channels)
+        n_out_features = num_degrees * num_channels
         self.mlp = nn.Sequential(
             nn.Linear(n_out_features, n_out_features),
             nn.ReLU(),
-            nn.Linear(n_out_features, output_dim)
+            nn.Linear(n_out_features, 1)
         )
 
     def forward(self, graph, forces=True, create_graph=True):
@@ -296,6 +213,10 @@ class TrIP(nn.Module):
     @staticmethod
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("Model architecture")
-        SE3TransformerPooled.add_argparse_args(parser)
+        SE3TransformerTrIP.add_argparse_args(parser)
+        parser.add_argument('--num_degrees',
+                    help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
+                    type=int, default=3)
+        parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=32)
         parser.add_argument('--num_basis_fns', help='Number of radial basis functions', type=int, default=16)
         return parent_parser
