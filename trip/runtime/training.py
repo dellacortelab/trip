@@ -187,15 +187,13 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    datamodule = TrIPDataModule(**vars(args))
+    si_dict = {}
+    si_dict = {1:-0.60068572, 6:-38.08356632, 7:-54.70753352, 8:-75.19417402} # Found from linear regression
+    datamodule = TrIPDataModule(si_dict=si_dict, **vars(args))
     energy_std = datamodule.get_energy_std().item()
 
     graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP(
-        fiber_in=Fiber({0: args.num_channels}),
-        fiber_out=Fiber({0: args.num_degrees * args.num_channels}),
-        fiber_edge=Fiber({0: args.num_basis_fns}),
-        output_dim=1,
         tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )
