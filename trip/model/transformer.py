@@ -40,7 +40,6 @@ from se3_transformer.model.fiber import Fiber
 from dgl.nn import SumPooling
 from se3_transformer.model.transformer import Sequential, get_populated_edge_features
 
-
 class SE3TransformerTrIP(nn.Module):
     def __init__(self,
                  num_layers: int,
@@ -54,7 +53,6 @@ class SE3TransformerTrIP(nn.Module):
                  use_layer_norm: bool = True,
                  tensor_cores: bool = False,
                  low_memory: bool = False,
-                 cutoff: float = float('inf'),
                  **kwargs):
         """
         :param num_layers:          Number of attention layers
@@ -77,7 +75,6 @@ class SE3TransformerTrIP(nn.Module):
         self.max_degree = max(*fiber_in.degrees, *fiber_hidden.degrees, *fiber_out.degrees)
         self.tensor_cores = tensor_cores
         self.low_memory = low_memory
-        self.cutoff = cutoff
 
         if low_memory:
             self.fuse_level = ConvSE3FuseLevel.NONE
@@ -95,8 +92,7 @@ class SE3TransformerTrIP(nn.Module):
                                                    use_layer_norm=use_layer_norm,
                                                    max_degree=self.max_degree,
                                                    fuse_level=self.fuse_level,
-                                                   low_memory=low_memory,
-                                                   cutoff=cutoff))
+                                                   low_memory=low_memory))
             if norm:
                 graph_modules.append(NormSE3(fiber_hidden))
             fiber_in = fiber_hidden
@@ -104,18 +100,19 @@ class SE3TransformerTrIP(nn.Module):
         graph_modules.append(ConvSE3(fiber_in=fiber_in,
                                      fiber_out=fiber_out,
                                      fiber_edge=fiber_edge,
-                                     self_interaction=True,
+                                     self_interaction=False,
+                                     pool=True,
                                      use_layer_norm=use_layer_norm,
                                      max_degree=self.max_degree))
         self.graph_modules = Sequential(*graph_modules)
 
-        self.pooling = SumPooling()
-
-    def forward(self, graph: DGLGraph, node_feats: Dict[str, Tensor],
-                edge_feats: Optional[Dict[str, Tensor]] = None,
-                basis: Optional[Dict[str, Tensor]] = None):
+    def forward(self,
+                graph: DGLGraph,
+                node_feats: Dict[str, Tensor],
+                edge_feats: Optional[Dict[str, Tensor]],
+                scale: Tensor):
         # Compute bases in case they weren't precomputed as part of the data loading
-        basis = basis or get_basis(graph.edata['rel_pos'], max_degree=self.max_degree, compute_gradients=False,
+        basis = get_basis(graph.edata['rel_pos'], max_degree=self.max_degree, compute_gradients=True,
                                    use_pad_trick=self.tensor_cores and not self.low_memory,
                                    amp=torch.is_autocast_enabled())
 
@@ -123,11 +120,14 @@ class SE3TransformerTrIP(nn.Module):
         basis = update_basis_with_fused(basis, self.max_degree, use_pad_trick=self.tensor_cores and not self.low_memory,
                                         fully_fused=self.fuse_level == ConvSE3FuseLevel.FULL)
 
+        # Scale basis with cutoff function
+        exp_scale = torch.exp(scale)[:,None,None,None]
+        basis = {key: value * exp_scale for key, value in basis.items()}
+
         edge_feats = get_populated_edge_features(graph.edata['rel_pos'], edge_feats)
 
-        node_feats = self.graph_modules(node_feats, edge_feats, graph=graph, basis=basis)
-
-        return self.pooling(graph, node_feats['0'])
+        feats = self.graph_modules(node_feats, edge_feats, graph=graph, basis=basis, scale=scale)
+        return feats['0'].squeeze(-1)
 
     @staticmethod
     def add_argparse_args(parser):
@@ -147,45 +147,44 @@ class SE3TransformerTrIP(nn.Module):
                                  'Only has an effect if AMP is enabled on Volta GPUs, or if running on Ampere GPUs')
         return parser
 
-
 class TrIP(nn.Module):
     def __init__(self,
                  num_degrees: int,
                  num_channels: int,
-                 num_basis_fns: int,
                  cutoff: float,
                  **kwargs):
         super().__init__()
+        self.num_degrees = num_degrees
+        self.num_channels = num_channels
+        self.cutoff = cutoff
+
+        num_out_channels = num_channels * num_degrees
         self.transformer = SE3TransformerTrIP(
-            fiber_in=Fiber({0: num_channels}),
+            fiber_in=Fiber.create(1, num_channels),
             fiber_hidden=Fiber.create(num_degrees, num_channels),
-            fiber_out=Fiber({0: num_degrees * num_channels}),
-            fiber_edge=Fiber({0: num_basis_fns}),
+            fiber_out=Fiber.create(1, num_out_channels),
+            fiber_edge=Fiber.create(1, self.num_channels),
             **kwargs
         )
-        self.cutoff = cutoff
-        self.num_basis_fns = num_basis_fns
         self.embedding = nn.Embedding(100, num_channels)
-        n_out_features = num_degrees * num_channels
         self.mlp = nn.Sequential(
-            nn.Linear(n_out_features, n_out_features),
-            nn.ReLU(),
-            nn.Linear(n_out_features, 1)
+            nn.Linear(num_out_channels, num_out_channels),
+            nn.SiLU(),
+            nn.Linear(num_out_channels, 1)
         )
+        self.pool = SumPooling()
 
     def forward(self, graph, forces=True, create_graph=True):
-        if forces==True:
-            graph.ndata['pos'].requires_grad = True
-            tr = self.transformer
-            basis = get_basis(graph.edata['rel_pos'], max_degree=tr.max_degree, compute_gradients=True,
-                                       use_pad_trick=tr.tensor_cores and not tr.low_memory,
-                                       amp=torch.is_autocast_enabled()
-            )
-        radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_basis_fns)
-        node_feats = {'0': self.embedding(graph.ndata['species']).unsqueeze(-1)}
+        scale = self.log_cutoff(graph.edata['rel_pos'], self.cutoff)
+        species_embedding = self.embedding(graph.ndata['species'])
+        node_feats = {'0': species_embedding.unsqueeze(-1)}
+        radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_channels)
         edge_feats = {'0': radial_basis.unsqueeze(-1)}
-        feats = self.transformer(graph, node_feats, edge_feats, basis).squeeze(-1)
-        energies = self.mlp(feats).squeeze(-1) 
+
+        feats = self.transformer(graph, node_feats, edge_feats, scale)
+        atom_energies = self.mlp(feats).squeeze(-1)
+        atom_energies -= self.mlp[1:](self.mlp[0].bias.unsqueeze(0)).squeeze(0) # Eliminate self-interaction energies, already accounted for!
+        energies = self.pool(graph, atom_energies)
         if not forces:
             return energies
         forces = -torch.autograd.grad(torch.sum(energies),
@@ -193,13 +192,14 @@ class TrIP(nn.Module):
                                       create_graph=create_graph,
                                       )[0]
         return energies, forces
-
+            
     @staticmethod
-    def _get_relative_pos(graph: DGLGraph) -> Tensor:
-        x = graph.ndata['pos']
-        src, dst = graph.edges()
-        rel_pos = x[dst] - x[src]
-        return rel_pos
+    def log_cutoff(rel_pos, cutoff):
+        dists = torch.norm(rel_pos, p=2, dim=1)
+        scale = torch.full_like(dists, -float('inf'))
+        def log_bump_fn(x): return 1 - 1 / (1 - x ** 2)  # Modified bump function with bump_fn(0) = 1
+        scale[dists < cutoff] = log_bump_fn(dists[dists < cutoff] / cutoff)
+        return scale
 
     @staticmethod
     def _get_radial_basis(graph, cutoff, num_basis_fns) -> Tensor:
@@ -215,8 +215,7 @@ class TrIP(nn.Module):
         parser = parent_parser.add_argument_group("Model architecture")
         SE3TransformerTrIP.add_argparse_args(parser)
         parser.add_argument('--num_degrees',
-                    help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
-                    type=int, default=3)
+                            help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
+                            type=int, default=3)
         parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=32)
-        parser.add_argument('--num_basis_fns', help='Number of radial basis functions', type=int, default=16)
         return parent_parser

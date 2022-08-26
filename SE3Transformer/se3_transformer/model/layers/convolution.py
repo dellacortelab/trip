@@ -106,10 +106,10 @@ class RadialProfile(nn.Module):
         modules = [
             nn.Linear(edge_dim, mid_dim),
             nn.LayerNorm(mid_dim) if use_layer_norm else None,
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(mid_dim, mid_dim),
             nn.LayerNorm(mid_dim) if use_layer_norm else None,
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(mid_dim, num_freq * channels_in * channels_out, bias=False)
         ]
 
@@ -283,7 +283,9 @@ class ConvSE3(nn.Module):
             node_feats: Dict[str, Tensor],
             edge_feats: Dict[str, Tensor],
             graph: DGLGraph,
-            basis: Dict[str, Tensor]
+            basis: Dict[str, Tensor],
+            *args, # TrIP: Not used here, but so scale can be used with attention
+            **kwargs, # TrIP
     ):
         with nvtx_range(f'ConvSE3'):
             invariant_edge_feats = edge_feats['0'].squeeze(-1)

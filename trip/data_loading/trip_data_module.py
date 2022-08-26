@@ -50,7 +50,7 @@ class TrIPDataModule(DataModule):
         si_tensor = AtomicData.get_si_energies()
         if si_dict is not None:
             for key, value in si_dict.items():
-                si_tensor[key-1] = value
+                si_tensor[key -1] = value
         return si_tensor
 
     def load_data(self, trip_file: pathlib.Path):
