@@ -176,6 +176,7 @@ class TrIP(nn.Module):
 
     def forward(self, graph, forces=True, create_graph=True):
         scale = self.log_cutoff(graph.edata['rel_pos'], self.cutoff)
+        scale[...] = 1.0
         species_embedding = self.embedding(graph.ndata['species'])
         node_feats = {'0': species_embedding.unsqueeze(-1)}
         radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_channels)
