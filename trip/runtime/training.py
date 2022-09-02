@@ -37,7 +37,6 @@ from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
 from trip.model import TrIP
-from se3_transformer.model.fiber import Fiber
 from se3_transformer.runtime import gpu_affinity
 from trip.runtime.arguments import PARSER
 from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback
