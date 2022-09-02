@@ -101,21 +101,25 @@ def train(model: nn.Module,
     model.to(device=device)
     local_rank = get_local_rank()
     world_size = dist.get_world_size() if dist.is_initialized() else 1
+    last_mlp_weight = f'mlp.{len(model.mlp)-1}.weight'
 
     if dist.is_initialized():
         model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
         model._set_static_graph()
+        last_mlp_weight = f'module.{last_mlp_weight}'
 
     model.train()
     grad_scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+
+    parameters = add_weight_decay(model, weight_decay=args.weight_decay, skip_list=[last_mlp_weight])
     if args.optimizer == 'adam':
-        optimizer = FusedAdam(model.parameters(), lr=args.learning_rate, betas=(args.momentum, 0.999),
+        optimizer = FusedAdam(parameters, lr=args.learning_rate, betas=(args.momentum, 0.999),
                               weight_decay=args.weight_decay)
     elif args.optimizer == 'lamb':
-        optimizer = FusedLAMB(model.parameters(), lr=args.learning_rate, betas=(args.momentum, 0.999),
+        optimizer = FusedLAMB(parameters, lr=args.learning_rate, betas=(args.momentum, 0.999),
                               weight_decay=args.weight_decay)
     else:
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=args.momentum,
+        optimizer = torch.optim.SGD(parameters, lr=args.learning_rate, momentum=args.momentum,
                                     weight_decay=args.weight_decay)
 
     epoch_start = load_state(model, optimizer, args.load_ckpt_path, callbacks) if args.load_ckpt_path else 0
@@ -131,10 +135,10 @@ def train(model: nn.Module,
                                                grad_scaler, optimizer, local_rank, callbacks, args)
         if dist.is_initialized():
             energy_loss = torch.tensor(energy_loss, dtype=torch.float, device=device)
-            torch.distributed.all_reduce(energy_loss)
-            energy_loss = (energy_loss / world_size).item()
             forces_loss = torch.tensor(forces_loss, dtype=torch.float, device=device)
+            torch.distributed.all_reduce(energy_loss)
             torch.distributed.all_reduce(forces_loss)
+            energy_loss = (energy_loss / world_size).item()
             forces_loss = (forces_loss / world_size).item()
 
         factor = energy_std * 627.5
@@ -166,6 +170,21 @@ def train(model: nn.Module,
 
     for callback in callbacks:
         callback.on_fit_end()
+
+# https://discuss.pytorch.org/t/weight-decay-in-the-optimizers-is-a-bad-idea-especially-with-batchnorm/16994/3
+def add_weight_decay(model, weight_decay, skip_list=()):
+    decay = []
+    no_decay = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if len(param.shape) == 1 or name in skip_list:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    return [
+        {'params': no_decay, 'weight_decay': 0.},
+        {'params': decay, 'weight_decay': weight_decay}]
 
 if __name__ == '__main__':
     is_distributed = init_distributed()

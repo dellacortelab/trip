@@ -40,7 +40,9 @@ from se3_transformer.model.fiber import Fiber
 from dgl.nn import SumPooling
 from se3_transformer.model.transformer import Sequential, get_populated_edge_features
 
+from trip.model.pooling import SumPoolingEdges
 from trip.model.weighted_edge_softmax import WeightedEdgeSoftmax
+
 
 class SE3TransformerTrIP(nn.Module):
     def __init__(self,
@@ -104,7 +106,7 @@ class SE3TransformerTrIP(nn.Module):
                                      fiber_out=fiber_out,
                                      fiber_edge=fiber_edge,
                                      self_interaction=False,
-                                     pool=True,
+                                     pool=False,
                                      use_layer_norm=use_layer_norm,
                                      max_degree=self.max_degree))
         self.graph_modules = Sequential(*graph_modules)
@@ -174,7 +176,7 @@ class TrIP(nn.Module):
             nn.SiLU(),
             nn.Linear(num_out_channels, 1)
         )
-        self.pool = SumPooling()
+        self.pool = SumPoolingEdges()
 
     def forward(self, graph, forces=True, create_graph=True):
         scale = self.cutoff_fn(graph.edata['rel_pos'], self.cutoff)
@@ -185,8 +187,7 @@ class TrIP(nn.Module):
 
         feats = self.transformer(graph, node_feats, edge_feats, scale)
         atom_energies = self.mlp(feats).squeeze(-1)
-        atom_energies -= self.mlp[1:](self.mlp[0].bias.unsqueeze(0)).squeeze(0) # Eliminate self-interaction energies, already accounted for!
-        energies = self.pool(graph, atom_energies)
+        energies = self.pool(graph, atom_energies, weight=scale)
         if not forces:
             return energies
         forces = -torch.autograd.grad(torch.sum(energies),
