@@ -121,8 +121,7 @@ class SE3TransformerTrIP(nn.Module):
                                         fully_fused=self.fuse_level == ConvSE3FuseLevel.FULL)
 
         # Scale basis with cutoff function
-        exp_scale = torch.exp(scale)[:,None,None,None]
-        basis = {key: value * exp_scale for key, value in basis.items()}
+        basis = {key: value * scale[:,None,None,None] for key, value in basis.items()}
 
         edge_feats = get_populated_edge_features(graph.edata['rel_pos'], edge_feats)
 
@@ -175,7 +174,7 @@ class TrIP(nn.Module):
         self.pool = SumPooling()
 
     def forward(self, graph, forces=True, create_graph=True):
-        scale = self.log_cutoff(graph.edata['rel_pos'], self.cutoff)
+        scale = self.cutoff_fn(graph.edata['rel_pos'], self.cutoff)
         scale[...] = 1.0
         species_embedding = self.embedding(graph.ndata['species'])
         node_feats = {'0': species_embedding.unsqueeze(-1)}
@@ -195,11 +194,11 @@ class TrIP(nn.Module):
         return energies, forces
             
     @staticmethod
-    def log_cutoff(rel_pos, cutoff):
+    def cutoff_fn(rel_pos, cutoff):
         dists = torch.norm(rel_pos, p=2, dim=1)
-        scale = torch.full_like(dists, -float('inf'))
-        def log_bump_fn(x): return 1 - 1 / (1 - x ** 2)  # Modified bump function with bump_fn(0) = 1
-        scale[dists < cutoff] = log_bump_fn(dists[dists < cutoff] / cutoff)
+        scale = torch.zeros_like(dists)
+        def bump_fn(x): return torch.exp(1 - 1 / (1 - x ** 2))  # Modified bump function with bump_fn(0) = 1
+        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff)
         return scale
 
     @staticmethod

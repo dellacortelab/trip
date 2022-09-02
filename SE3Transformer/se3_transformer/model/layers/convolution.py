@@ -284,8 +284,7 @@ class ConvSE3(nn.Module):
             edge_feats: Dict[str, Tensor],
             graph: DGLGraph,
             basis: Dict[str, Tensor],
-            *args, # TrIP: Not used here, but so scale can be used with attention
-            **kwargs, # TrIP
+            scale: Tensor=None # TrIP
     ):
         with nvtx_range(f'ConvSE3'):
             invariant_edge_feats = edge_feats['0'].squeeze(-1)
