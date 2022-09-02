@@ -40,6 +40,8 @@ from se3_transformer.model.fiber import Fiber
 from dgl.nn import SumPooling
 from se3_transformer.model.transformer import Sequential, get_populated_edge_features
 
+from trip.model.weighted_edge_softmax import WeightedEdgeSoftmax
+
 class SE3TransformerTrIP(nn.Module):
     def __init__(self,
                  num_layers: int,
@@ -92,7 +94,8 @@ class SE3TransformerTrIP(nn.Module):
                                                    use_layer_norm=use_layer_norm,
                                                    max_degree=self.max_degree,
                                                    fuse_level=self.fuse_level,
-                                                   low_memory=low_memory))
+                                                   low_memory=low_memory,
+                                                   edge_softmax_fn=WeightedEdgeSoftmax()))
             if norm:
                 graph_modules.append(NormSE3(fiber_hidden))
             fiber_in = fiber_hidden
@@ -121,7 +124,7 @@ class SE3TransformerTrIP(nn.Module):
                                         fully_fused=self.fuse_level == ConvSE3FuseLevel.FULL)
 
         # Scale basis with cutoff function
-        basis = {key: value * scale[:,None,None,None] for key, value in basis.items()}
+        basis = {key: value * scale[...,None,None,None] for key, value in basis.items()}
 
         edge_feats = get_populated_edge_features(graph.edata['rel_pos'], edge_feats)
 
@@ -162,7 +165,7 @@ class TrIP(nn.Module):
             fiber_in=Fiber.create(1, num_channels),
             fiber_hidden=Fiber.create(num_degrees, num_channels),
             fiber_out=Fiber.create(1, num_out_channels),
-            fiber_edge=Fiber.create(1, self.num_channels),
+            fiber_edge=Fiber.create(1, self.num_channels - 1), # So there are num_channels total with distance
             **kwargs
         )
         self.embedding = nn.Embedding(100, num_channels)
@@ -175,10 +178,9 @@ class TrIP(nn.Module):
 
     def forward(self, graph, forces=True, create_graph=True):
         scale = self.cutoff_fn(graph.edata['rel_pos'], self.cutoff)
-        scale[...] = 1.0
-        species_embedding = self.embedding(graph.ndata['species'])
+        species_embedding = self.embedding(graph.ndata['species'] - 1)
         node_feats = {'0': species_embedding.unsqueeze(-1)}
-        radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_channels)
+        radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_channels - 1)
         edge_feats = {'0': radial_basis.unsqueeze(-1)}
 
         feats = self.transformer(graph, node_feats, edge_feats, scale)
@@ -192,7 +194,7 @@ class TrIP(nn.Module):
                                       create_graph=create_graph,
                                       )[0]
         return energies, forces
-            
+        
     @staticmethod
     def cutoff_fn(rel_pos, cutoff):
         dists = torch.norm(rel_pos, p=2, dim=1)

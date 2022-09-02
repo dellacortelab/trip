@@ -28,7 +28,7 @@ import torch.nn as nn
 from dgl import DGLGraph
 from dgl.ops import edge_softmax
 from torch import Tensor
-from typing import Dict, Optional, Union
+from typing import Callable, Dict, Optional, Union
 
 from se3_transformer.model.fiber import Fiber
 from se3_transformer.model.layers.convolution import ConvSE3, ConvSE3FuseLevel
@@ -44,7 +44,8 @@ class AttentionSE3(nn.Module):
             self,
             num_heads: int,
             key_fiber: Fiber,
-            value_fiber: Fiber
+            value_fiber: Fiber,
+            edge_softmax_fn: Optional[Callable] = None # TrIP
     ):
         """
         :param num_heads:     Number of attention heads
@@ -55,6 +56,10 @@ class AttentionSE3(nn.Module):
         self.num_heads = num_heads
         self.key_fiber = key_fiber
         self.value_fiber = value_fiber
+        if edge_softmax_fn is None: # TrIP
+            self.edge_softmax = edge_softmax
+        else:
+            self.edge_softmax = edge_softmax_fn
 
     def forward(
             self,
@@ -62,7 +67,7 @@ class AttentionSE3(nn.Module):
             key: Union[Tensor, Dict[str, Tensor]],  # edge features (may be fused)
             query: Dict[str, Tensor],  # node features
             graph: DGLGraph,
-            scale: Tensor # TrIP
+            scale: Optional[Tensor] = None # TrIP
     ):
         with nvtx_range('AttentionSE3'):
             with nvtx_range('reshape keys and queries'):
@@ -81,7 +86,8 @@ class AttentionSE3(nn.Module):
                 # Compute attention weights (softmax of inner product between key and query)
                 edge_weights = dgl.ops.e_dot_v(graph, key, query).squeeze(-1)
                 edge_weights = edge_weights / np.sqrt(self.key_fiber.num_features)
-                edge_weights = edge_softmax(graph, edge_weights)
+                softmax_kw = {} if scale is None else {'scale': scale} # TrIP
+                edge_weights = self.edge_softmax(graph, edge_weights, **softmax_kw) # TrIP
                 edge_weights = edge_weights[..., None, None]
 
             with nvtx_range('weighted sum'):
@@ -118,6 +124,7 @@ class AttentionBlockSE3(nn.Module):
             max_degree: bool = 4,
             fuse_level: ConvSE3FuseLevel = ConvSE3FuseLevel.FULL,
             low_memory: bool = False,
+            edge_softmax_fn: Optional[Callable] = None, # TrIP
             **kwargs
     ):
         """
@@ -144,7 +151,7 @@ class AttentionBlockSE3(nn.Module):
                                     use_layer_norm=use_layer_norm, max_degree=max_degree, fuse_level=fuse_level,
                                     allow_fused_output=True, low_memory=low_memory)
         self.to_query = LinearSE3(fiber_in, key_query_fiber)
-        self.attention = AttentionSE3(num_heads, key_query_fiber, value_fiber)
+        self.attention = AttentionSE3(num_heads, key_query_fiber, value_fiber, edge_softmax_fn) # TrIP
         self.project = LinearSE3(value_fiber + fiber_in, fiber_out)
 
     def forward(
@@ -153,7 +160,7 @@ class AttentionBlockSE3(nn.Module):
             edge_features: Dict[str, Tensor],
             graph: DGLGraph,
             basis: Dict[str, Tensor],
-            scale: Tensor,
+            scale: Optional[Tensor] = None # TrIP
     ):
         with nvtx_range('AttentionBlockSE3'):
             with nvtx_range('keys / values'):
