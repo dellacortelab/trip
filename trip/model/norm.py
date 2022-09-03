@@ -5,36 +5,93 @@ from torch.nn.modules import Module
 from torch.nn import functional as F
 from torch.nn import init
 
-from torch import Tensor, Size
-from typing import Union, List, Tuple
+from torch import Tensor
 
 
+# Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#
+# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
+# SPDX-License-Identifier: MIT
 
-# Code adapted from:
-# https://pytorch.org/docs/stable/_modules/torch/nn/modules/normalization.html#LayerNorm
-# https://pytorch.org/docs/stable/_modules/torch/nn/functional.html#layer_norm
+
+from typing import Dict
+
+import torch
+import torch.nn as nn
+from torch import Tensor
+from torch.cuda.nvtx import range as nvtx_range
+
+from se3_transformer.model.fiber import Fiber
 
 
-_shape_t = Union[int, List[int], Size]
+class TrIPActivation(nn.Module):
+    def __init__(self):
+        super(TrIPActivation, self).__init__()
+        self.relu = nn.ReLU()
 
-class TrIPLayerNorm(Module):
-    __constants__ = ['normalized_shape', 'eps', 'elementwise_affine']
-    normalized_shape: Tuple[int, ...]
-    eps: float
-    elementwise_affine: bool
+    def forward(self, input: Tensor) -> Tensor:
+        input = self.relu(input)
+        den = 1 + torch.exp(1 / input ** 2)
+        return 2 * input / den
 
-    def __init__(self, normalized_shape: _shape_t, eps: float = 1e-5, elementwise_affine: bool = True,
-                 device=None, dtype=None) -> None:
+class TrIPNorm(nn.Module):
+    """
+    Norm-based SE(3)-equivariant nonlinearity.
+
+                 ┌──> feature_norm ──> LayerNorm() ──> ReLU() ──┐
+    feature_in ──┤                                              * ──> feature_out
+                 └──> feature_phase ────────────────────────────┘
+    """
+
+    NORM_CLAMP = 2 ** -12  # Minimum positive subnormal for FP16  # TRIP
+
+    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = lambda x : x - torch.arctan(x)): # TODO: Mathematically check if this is actually smooth
+        super().__init__()
+        self.fiber = fiber
+        self.nonlinearity = nonlinearity
+
+        # Use multiple layer normalizations
+        self.layer_norms = nn.ModuleDict({
+            str(degree): TrIPLayerNorm(channels)
+            for degree, channels in fiber
+        })
+
+    def forward(self, features: Dict[str, Tensor], *args, **kwargs) -> Dict[str, Tensor]:
+        with nvtx_range('NormSE3'):
+            output = {}
+            for degree, feat in features.items():
+                norm = feat.norm(dim=-1, keepdim=True).clamp(min=self.NORM_CLAMP)
+                new_norm = self.nonlinearity(self.layer_norms[degree](norm.squeeze(-1)).unsqueeze(-1))
+                output[degree] = new_norm * feat / norm
+            return output
+
+
+class TrIPLayerNorm(nn.Module):
+    def __init__(self, num_channels, elementwise_affine=True, device=None, dtype=None):
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(TrIPLayerNorm, self).__init__()
-        if isinstance(normalized_shape, numbers.Integral):
-            # mypy error: incompatible types in assignment
-            normalized_shape = (normalized_shape,)  # type: ignore[assignment]
-        self.normalized_shape = tuple(normalized_shape)  # type: ignore[arg-type]
-        self.eps = eps
+        self.num_channels = num_channels
         self.elementwise_affine = elementwise_affine
         if self.elementwise_affine:
-            self.weight = Parameter(torch.empty(self.normalized_shape, **factory_kwargs))
+            self.weight = Parameter(torch.empty(self.num_channels, **factory_kwargs))
         else:
             self.register_parameter('weight', None)
 
@@ -45,45 +102,35 @@ class TrIPLayerNorm(Module):
             init.ones_(self.weight)
 
     def forward(self, input: Tensor) -> Tensor:
-        return F.layer_norm(
-            input, self.normalized_shape, self.weight, None, self.eps)
-
+        out = input / torch.mean(input, dim=-1, keepdim=True)
+        return out * self.weight if self.elementwise_affine else out
+            
     def extra_repr(self) -> str:
-        return '{normalized_shape}, eps={eps}, ' \
+        return '{normalized_shape}, ' \
             'elementwise_affine={elementwise_affine}'.format(**self.__dict__)
 
 
-class GroupNorm(Module):
-    __constants__ = ['num_groups', 'num_channels', 'eps', 'affine']
-    num_groups: int
-    num_channels: int
-    eps: float
-    affine: bool
-
-    def __init__(self, num_groups: int, num_channels: int, eps: float = 1e-5, affine: bool = True,
-                 device=None, dtype=None) -> None:
+# TODO: Get this working!
+class TrIPGroupNorm(nn.Module):
+    def __init__(self, num_groups, num_channels, affine=True, device=None, dtype=None):
         factory_kwargs = {'device': device, 'dtype': dtype}
-        super(GroupNorm, self).__init__()
+        super(TrIPGroupNorm, self).__init__()
         if num_channels % num_groups != 0:
             raise ValueError('num_channels must be divisible by num_groups')
 
         self.num_groups = num_groups
         self.num_channels = num_channels
-        self.eps = eps
         self.affine = affine
         if self.affine:
             self.weight = Parameter(torch.empty(num_channels, **factory_kwargs))
-            self.bias = Parameter(torch.empty(num_channels, **factory_kwargs))
         else:
             self.register_parameter('weight', None)
-            self.register_parameter('bias', None)
 
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
         if self.affine:
             init.ones_(self.weight)
-            init.zeros_(self.bias)
 
     def forward(self, input: Tensor) -> Tensor:
         return F.group_norm(

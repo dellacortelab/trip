@@ -40,6 +40,7 @@ from se3_transformer.model.fiber import Fiber
 from dgl.nn import SumPooling
 from se3_transformer.model.transformer import Sequential, get_populated_edge_features
 
+from trip.model.norm import TrIPNorm
 from trip.model.pooling import SumPoolingEdges
 from trip.model.weighted_edge_softmax import WeightedEdgeSoftmax
 
@@ -99,7 +100,7 @@ class SE3TransformerTrIP(nn.Module):
                                                    low_memory=low_memory,
                                                    edge_softmax_fn=WeightedEdgeSoftmax()))
             if norm:
-                graph_modules.append(NormSE3(fiber_hidden))
+                graph_modules.append(TrIPNorm(fiber_hidden))
             fiber_in = fiber_hidden
 
         graph_modules.append(ConvSE3(fiber_in=fiber_in,
