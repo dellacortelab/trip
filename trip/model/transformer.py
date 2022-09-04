@@ -38,12 +38,24 @@ from se3_transformer.runtime.utils import str2bool
 from se3_transformer.model.fiber import Fiber
 
 from dgl.nn import SumPooling
-from se3_transformer.model.transformer import Sequential, get_populated_edge_features
+from se3_transformer.model.transformer import Sequential
 
 from trip.model.norm import TrIPNorm
 from trip.model.pooling import SumPoolingEdges
 from trip.model.weighted_edge_softmax import WeightedEdgeSoftmax
 
+
+def get_populated_edge_features(relative_pos: Tensor, edge_features: Optional[Dict[str, Tensor]] = None):
+    """ Add relative positions to existing edge features """
+    edge_features = edge_features.copy() if edge_features else {}
+    r = relative_pos.norm(dim=-1, keepdim=True)
+    #r = r - torch.atan(r) # TODO: Check if this actually inputs smooth
+    if '0' in edge_features:
+        edge_features['0'] = torch.cat([edge_features['0'], r[..., None]], dim=1)
+    else:
+        edge_features['0'] = r[..., None]
+
+    return edge_features
 
 class SE3TransformerTrIP(nn.Module):
     def __init__(self,

@@ -63,7 +63,7 @@ class TrIPNorm(nn.Module):
 
     NORM_CLAMP = 2 ** -12  # Minimum positive subnormal for FP16  # TRIP
 
-    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = lambda x : x - torch.arctan(x)): # TODO: Mathematically check if this is actually smooth
+    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = lambda x : x - torch.atan(x)): # TODO: Mathematically check if this is actually smooth
         super().__init__()
         self.fiber = fiber
         self.nonlinearity = nonlinearity
