@@ -1,13 +1,3 @@
-import torch
-import numbers
-from torch.nn.parameter import Parameter
-from torch.nn.modules import Module
-from torch.nn import functional as F
-from torch.nn import init
-
-from torch import Tensor
-
-
 # Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -31,11 +21,16 @@ from torch import Tensor
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
 # SPDX-License-Identifier: MIT
 
+import torch
+from torch import nn
+from torch.nn.parameter import Parameter
+from torch.nn import functional as F
+from torch.nn import init
+
+from torch import Tensor
 
 from typing import Dict
 
-import torch
-import torch.nn as nn
 from torch import Tensor
 from torch.cuda.nvtx import range as nvtx_range
 
@@ -63,7 +58,7 @@ class TrIPNorm(nn.Module):
 
     NORM_CLAMP = 2 ** -12  # Minimum positive subnormal for FP16  # TRIP
 
-    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = lambda x : x - torch.atan(x)): # TODO: Mathematically check if this is actually smooth
+    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = nn.SiLU()):
         super().__init__()
         self.fiber = fiber
         self.nonlinearity = nonlinearity
@@ -79,8 +74,9 @@ class TrIPNorm(nn.Module):
             output = {}
             for degree, feat in features.items():
                 norm = feat.norm(dim=-1, keepdim=True).clamp(min=self.NORM_CLAMP)
+                norm = torch.sqrt(norm**2 + 1)  # Make norm smoooth
                 new_norm = self.nonlinearity(self.layer_norms[degree](norm.squeeze(-1)).unsqueeze(-1))
-                output[degree] = new_norm * feat / norm
+                output[degree] = new_norm * feat / norm  # TODO: Get rid of TrIP Norm stuff! Can just use se3-t stuff. Add the norm-smoothing process and silu instead of relu and we should be good :)
             return output
 
 

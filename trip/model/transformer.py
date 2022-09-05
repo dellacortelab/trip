@@ -49,7 +49,7 @@ def get_populated_edge_features(relative_pos: Tensor, edge_features: Optional[Di
     """ Add relative positions to existing edge features """
     edge_features = edge_features.copy() if edge_features else {}
     r = relative_pos.norm(dim=-1, keepdim=True)
-    #r = r - torch.atan(r) # TODO: Check if this actually inputs smooth
+    r = torch.sqrt(r**2 + 1) - 1  # Smooth norm TODO: Optimize this with previous line
     if '0' in edge_features:
         edge_features['0'] = torch.cat([edge_features['0'], r[..., None]], dim=1)
     else:
@@ -112,7 +112,7 @@ class SE3TransformerTrIP(nn.Module):
                                                    low_memory=low_memory,
                                                    edge_softmax_fn=WeightedEdgeSoftmax()))
             if norm:
-                graph_modules.append(TrIPNorm(fiber_hidden))
+                graph_modules.append(NormSE3(fiber_hidden))
             fiber_in = fiber_hidden
 
         graph_modules.append(ConvSE3(fiber_in=fiber_in,
@@ -180,7 +180,7 @@ class TrIP(nn.Module):
             fiber_in=Fiber.create(1, num_channels),
             fiber_hidden=Fiber.create(num_degrees, num_channels),
             fiber_out=Fiber.create(1, num_out_channels),
-            fiber_edge=Fiber.create(1, self.num_channels - 1), # So there are num_channels total with distance
+            fiber_edge=Fiber.create(1, self.num_channels - 1), # So there are num_channels when dist is cat'ed
             **kwargs
         )
         self.embedding = nn.Embedding(100, num_channels)
@@ -214,7 +214,8 @@ class TrIP(nn.Module):
         dists = torch.norm(rel_pos, p=2, dim=1)
         scale = torch.zeros_like(dists)
         def bump_fn(x): return torch.exp(1 - 1 / (1 - x ** 2))  # Modified bump function with bump_fn(0) = 1
-        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff)
+        def smooth_fn(x): return torch.exp(-1 / x)
+        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff) * smooth_fn(dists[[dists < cutoff]])
         return scale
 
     @staticmethod
