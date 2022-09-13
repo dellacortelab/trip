@@ -91,3 +91,18 @@ container.set_data('test', species_data, pos_data, energy_data, forces_data, box
 save_path = os.path.join(data_dir, 'ani1x.trip')
 
 container.save_data(save_path)
+
+# Now create a testing subset (not a test set)
+test_container = TrIPContainer()
+
+subsets = ['train', 'val', 'test']
+
+for subset in subsets:
+    data = container.get_data(subset)
+    new_data = [data[0]]
+    for i, category in enumerate(data[1:]):
+        new_data.append([conf[0,None,...] for conf in category])
+    test_container.set_data(subset, *new_data)
+
+test_path = os.path.join(data_dir, 'test.trip')
+test_container.save_data(test_path)

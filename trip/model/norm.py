@@ -34,17 +34,18 @@ from typing import Dict
 from torch import Tensor
 from torch.cuda.nvtx import range as nvtx_range
 
-from se3_transformer.model.fiber import Fiber
+from se3_transformer.model import Fiber
 
 
 class TrIPActivation(nn.Module):
+    """
+    A smooth activation function regardless of the parity of incoming features
+    """
     def __init__(self):
         super(TrIPActivation, self).__init__()
-        self.relu = nn.ReLU()
 
     def forward(self, input: Tensor) -> Tensor:
-        input = self.relu(input)
-        den = 1 + torch.exp(1 / input ** 2)
+        den = input * torch.nan_to_num(torch.exp(-1 / torch.abs(input)))
         return 2 * input / den
 
 class TrIPNorm(nn.Module):
@@ -58,7 +59,7 @@ class TrIPNorm(nn.Module):
 
     NORM_CLAMP = 2 ** -12  # Minimum positive subnormal for FP16  # TRIP
 
-    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = nn.SiLU()):
+    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = TrIPActivation()):
         super().__init__()
         self.fiber = fiber
         self.nonlinearity = nonlinearity
@@ -70,13 +71,12 @@ class TrIPNorm(nn.Module):
         })
 
     def forward(self, features: Dict[str, Tensor], *args, **kwargs) -> Dict[str, Tensor]:
-        with nvtx_range('NormSE3'):
+        with nvtx_range('TrIPNorm'):
             output = {}
             for degree, feat in features.items():
                 norm = feat.norm(dim=-1, keepdim=True).clamp(min=self.NORM_CLAMP)
-                norm = torch.sqrt(norm**2 + 1)  # Make norm smoooth
                 new_norm = self.nonlinearity(self.layer_norms[degree](norm.squeeze(-1)).unsqueeze(-1))
-                output[degree] = new_norm * feat / norm  # TODO: Get rid of TrIP Norm stuff! Can just use se3-t stuff. Add the norm-smoothing process and silu instead of relu and we should be good :)
+                output[degree] = new_norm * feat / norm
             return output
 
 
@@ -106,7 +106,7 @@ class TrIPLayerNorm(nn.Module):
             'elementwise_affine={elementwise_affine}'.format(**self.__dict__)
 
 
-# TODO: Get this working!
+# TODO: Get this working and use it to fuse TrIPLayerNorm features
 class TrIPGroupNorm(nn.Module):
     def __init__(self, num_groups, num_channels, affine=True, device=None, dtype=None):
         factory_kwargs = {'device': device, 'dtype': dtype}

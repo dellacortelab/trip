@@ -21,41 +21,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
 # SPDX-License-Identifier: MIT
 
-import logging
 from typing import Optional, Literal, Dict
 
 import torch
 import torch.nn as nn
-from dgl import DGLGraph
 from torch import Tensor
+
+from dgl import DGLGraph
 
 from se3_transformer.model.basis import get_basis, update_basis_with_fused
 from se3_transformer.model.layers.attention import AttentionBlockSE3
 from se3_transformer.model.layers.convolution import ConvSE3, ConvSE3FuseLevel
-from se3_transformer.model.layers.norm import NormSE3
-from se3_transformer.model.layers.pooling import GPooling
-from se3_transformer.runtime.utils import str2bool
 from se3_transformer.model.fiber import Fiber
+from se3_transformer.model.transformer import Sequential, get_populated_edge_features
+from se3_transformer.runtime.utils import str2bool
 
-from dgl.nn import SumPooling
-from se3_transformer.model.transformer import Sequential
-
+from trip.model.gate import TrIPGate
 from trip.model.norm import TrIPNorm
 from trip.model.pooling import SumPoolingEdges
 from trip.model.weighted_edge_softmax import WeightedEdgeSoftmax
-
-
-def get_populated_edge_features(relative_pos: Tensor, edge_features: Optional[Dict[str, Tensor]] = None):
-    """ Add relative positions to existing edge features """
-    edge_features = edge_features.copy() if edge_features else {}
-    r = relative_pos.norm(dim=-1, keepdim=True)
-    r = torch.sqrt(r**2 + 1) - 1  # Smooth norm TODO: Optimize this with previous line
-    if '0' in edge_features:
-        edge_features['0'] = torch.cat([edge_features['0'], r[..., None]], dim=1)
-    else:
-        edge_features['0'] = r[..., None]
-
-    return edge_features
 
 class SE3TransformerTrIP(nn.Module):
     def __init__(self,
@@ -66,6 +50,7 @@ class SE3TransformerTrIP(nn.Module):
                  num_heads: int,
                  channels_div: int,
                  fiber_edge: Fiber = Fiber({}),
+                 gate: bool = True,
                  norm: bool = True,
                  use_layer_norm: bool = True,
                  tensor_cores: bool = False,
@@ -99,10 +84,13 @@ class SE3TransformerTrIP(nn.Module):
             # Fully fused convolutions when using Tensor Cores (and not low memory mode)
             self.fuse_level = ConvSE3FuseLevel.FULL if tensor_cores else ConvSE3FuseLevel.PARTIAL
 
+        fiber_conv = TrIPGate.make_input_fiber(fiber_hidden) if gate else fiber_hidden
+
         graph_modules = []
-        for i in range(num_layers):
+        for _ in range(num_layers):
+            # TODO: Make fiber_conv and fiber_hidden distinction understandable
             graph_modules.append(AttentionBlockSE3(fiber_in=fiber_in,
-                                                   fiber_out=fiber_hidden,
+                                                   fiber_out=fiber_conv,
                                                    fiber_edge=fiber_edge,
                                                    num_heads=num_heads,
                                                    channels_div=channels_div,
@@ -112,7 +100,9 @@ class SE3TransformerTrIP(nn.Module):
                                                    low_memory=low_memory,
                                                    edge_softmax_fn=WeightedEdgeSoftmax()))
             if norm:
-                graph_modules.append(NormSE3(fiber_hidden))
+                graph_modules.append(TrIPNorm(fiber_conv, nonlinearity = lambda x : x))
+            if gate:
+                graph_modules.append(TrIPGate(fiber_conv))
             fiber_in = fiber_hidden
 
         graph_modules.append(ConvSE3(fiber_in=fiber_in,
@@ -154,6 +144,8 @@ class SE3TransformerTrIP(nn.Module):
                             help='Number of heads in self-attention')
         parser.add_argument('--channels_div', type=int, default=2,
                             help='Channels division before feeding to attention layer')
+        parser.add_argument('--gate', type=str2bool, nargs='?', const=True, default=False,
+                            help='Apply a gated nonlinear layer after each attention block')
         parser.add_argument('--norm', type=str2bool, nargs='?', const=True, default=False,
                             help='Apply a normalization layer after each attention block')
         parser.add_argument('--use_layer_norm', type=str2bool, nargs='?', const=True, default=False,
@@ -196,6 +188,7 @@ class TrIP(nn.Module):
         species_embedding = self.embedding(graph.ndata['species'] - 1)
         node_feats = {'0': species_embedding.unsqueeze(-1)}
         radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_channels - 1)
+        radial_basis = radial_basis * scale.unsqueeze(-1)
         edge_feats = {'0': radial_basis.unsqueeze(-1)}
 
         feats = self.transformer(graph, node_feats, edge_feats, scale)
@@ -215,11 +208,13 @@ class TrIP(nn.Module):
         scale = torch.zeros_like(dists)
         def bump_fn(x): return torch.exp(1 - 1 / (1 - x ** 2))  # Modified bump function with bump_fn(0) = 1
         def smooth_fn(x): return torch.exp(-1 / x)
-        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff) * smooth_fn(dists[[dists < cutoff]])
+        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff) * smooth_fn(dists[dists < cutoff] / 3)
+        scale = torch.nan_to_num(scale) # Fix potential NAN problems
         return scale
 
     @staticmethod
     def _get_radial_basis(graph, cutoff, num_basis_fns) -> Tensor:
+        # TODO: Make origin smooth
         rel_pos = graph.edata['rel_pos']
         edge_dists = torch.norm(rel_pos, dim=1)
         gaussian_centers = torch.linspace(0, cutoff, num_basis_fns, device=rel_pos.device)
@@ -234,5 +229,5 @@ class TrIP(nn.Module):
         parser.add_argument('--num_degrees',
                             help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
                             type=int, default=3)
-        parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=32)
+        parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=16)
         return parent_parser
