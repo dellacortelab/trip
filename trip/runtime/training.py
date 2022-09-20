@@ -206,6 +206,7 @@ if __name__ == '__main__':
     logger = LoggerCollection(loggers)
 
     si_dict = {}
+    si_dict = {1:-0.3884, 6:-37.7641, 7:-54.2119, 8:-74.9005} # Found from DFT calculations of singlet energies state
     #si_dict = {1:-0.60068572, 6:-38.08356632, 7:-54.70753352, 8:-75.19417402} # Found from linear regression
     datamodule = TrIPDataModule(si_dict=si_dict, **vars(args))
     energy_std = datamodule.get_energy_std().item()

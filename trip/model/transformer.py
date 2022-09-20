@@ -183,7 +183,7 @@ class TrIP(nn.Module):
         )
         self.pool = SumPoolingEdges()
 
-    def forward(self, graph, forces=True, create_graph=True):
+    def forward(self, graph, forces=True, create_graph=False):
         scale = self.cutoff_fn(graph.edata['rel_pos'], self.cutoff)
         species_embedding = self.embedding(graph.ndata['species'] - 1)
         node_feats = {'0': species_embedding.unsqueeze(-1)}
@@ -208,7 +208,7 @@ class TrIP(nn.Module):
         scale = torch.zeros_like(dists)
         def bump_fn(x): return torch.exp(1 - 1 / (1 - x ** 2))  # Modified bump function with bump_fn(0) = 1
         def smooth_fn(x): return torch.exp(-1 / x)
-        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff) * smooth_fn(dists[dists < cutoff] / 3)
+        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff) * smooth_fn(3 * dists[dists < cutoff])
         scale = torch.nan_to_num(scale) # Fix potential NAN problems
         return scale
 
