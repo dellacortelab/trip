@@ -25,6 +25,7 @@ from typing import Optional, Literal, Dict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 from dgl import DGLGraph
@@ -41,6 +42,7 @@ from trip.model.norm import TrIPNorm
 from trip.model.pooling import SumPoolingEdges
 from trip.model.weighted_edge_softmax import WeightedEdgeSoftmax
 
+        
 class SE3TransformerTrIP(nn.Module):
     def __init__(self,
                  num_layers: int,
@@ -128,7 +130,7 @@ class SE3TransformerTrIP(nn.Module):
         basis = update_basis_with_fused(basis, self.max_degree, use_pad_trick=self.tensor_cores and not self.low_memory,
                                         fully_fused=self.fuse_level == ConvSE3FuseLevel.FULL)
 
-        # Scale basis with cutoff function
+        # Scale basis
         basis = {key: value * scale[...,None,None,None] for key, value in basis.items()}
 
         edge_feats = get_populated_edge_features(graph.edata['rel_pos'], edge_feats)
@@ -156,17 +158,25 @@ class SE3TransformerTrIP(nn.Module):
                                  'Only has an effect if AMP is enabled on Volta GPUs, or if running on Ampere GPUs')
         return parser
 
+
 class TrIP(nn.Module):
     def __init__(self,
                  num_degrees: int,
                  num_channels: int,
+                 energy_std: float,
+                 screen: float,
                  cutoff: float,
+                 coulomb_energy_unit: float = 0.529_177_211,  # e^2/(4*pi*e0) in Ha*A
                  **kwargs):
         super().__init__()
         self.num_degrees = num_degrees
         self.num_channels = num_channels
+        self.coulomb_energy_unit = coulomb_energy_unit
+        self.screen = screen
         self.cutoff = cutoff
+        self.energy_std = energy_std
 
+        self.embedding = nn.Embedding(100, num_channels)
         num_out_channels = num_channels * num_degrees
         self.transformer = SE3TransformerTrIP(
             fiber_in=Fiber.create(1, num_channels),
@@ -175,25 +185,19 @@ class TrIP(nn.Module):
             fiber_edge=Fiber.create(1, self.num_channels - 1), # So there are num_channels when dist is cat'ed
             **kwargs
         )
-        self.embedding = nn.Embedding(100, num_channels)
         self.mlp = nn.Sequential(
             nn.Linear(num_out_channels, num_out_channels),
             nn.SiLU(),
             nn.Linear(num_out_channels, 1)
         )
-        self.pool = SumPoolingEdges()
+        self.pool_edges = SumPoolingEdges()
 
-    def forward(self, graph, forces=True, create_graph=False):
-        scale = self.cutoff_fn(graph.edata['rel_pos'], self.cutoff)
-        species_embedding = self.embedding(graph.ndata['species'] - 1)
-        node_feats = {'0': species_embedding.unsqueeze(-1)}
-        radial_basis = self._get_radial_basis(graph, self.cutoff, self.num_channels - 1)
-        radial_basis = radial_basis * scale.unsqueeze(-1)
-        edge_feats = {'0': radial_basis.unsqueeze(-1)}
+    def forward(self, graph, forces=True, create_graph=False, standardized=False):
+        edge_energies = self.forward_edge_energies(graph)
+        energies = self.pool_edges(graph, edge_energies)
 
-        feats = self.transformer(graph, node_feats, edge_feats, scale)
-        atom_energies = self.mlp(feats).squeeze(-1)
-        energies = self.pool(graph, atom_energies, weight=scale)
+        if not standardized: # Remove standardization
+            energies = energies * self.energy_std
         if not forces:
             return energies
         forces = -torch.autograd.grad(torch.sum(energies),
@@ -201,26 +205,58 @@ class TrIP(nn.Module):
                                       create_graph=create_graph,
                                       )[0]
         return energies, forces
-        
+
+    def forward_edge_energies(self, graph):
+        dist = torch.norm(graph.edata['rel_pos'], p=2, dim=1)
+        scale = self.scale_fn(dist, self.cutoff)
+        subscale = self.subscale_fn(dist, self.screen)
+
+        species_embedding = self.embedding(graph.ndata['species'] - 1)  # -1 so H starts at 0
+        node_feats = {'0': species_embedding.unsqueeze(-1)}
+        radial_basis = self.get_radial_basis(dist)
+        edge_feats = {'0': radial_basis.unsqueeze(-1)}
+
+        feats = self.transformer(graph, node_feats, edge_feats, scale)
+        learned_energies = self.mlp(feats).squeeze(-1) * scale
+        coulomb_energies = self.screened_coulomb(graph, dist, subscale)
+        return learned_energies + coulomb_energies
+
     @staticmethod
-    def cutoff_fn(rel_pos, cutoff):
-        dists = torch.norm(rel_pos, p=2, dim=1)
-        scale = torch.zeros_like(dists)
-        def bump_fn(x): return torch.exp(1 - 1 / (1 - x ** 2))  # Modified bump function with bump_fn(0) = 1
-        def smooth_fn(x): return torch.exp(-1 / x)
-        scale[dists < cutoff] = bump_fn(dists[dists < cutoff] / cutoff) * smooth_fn(3 * dists[dists < cutoff])
-        scale = torch.nan_to_num(scale) # Fix potential NAN problems
+    def scale_fn(dist, cutoff):
+        scale = torch.zeros_like(dist)
+        bump_fn = lambda x : torch.exp(1 - 1 / (1 - x**2))
+        scale[dist < cutoff] = bump_fn(2 * dist[dist < cutoff] / cutoff -1)
         return scale
 
     @staticmethod
-    def _get_radial_basis(graph, cutoff, num_basis_fns) -> Tensor:
-        # TODO: Make origin smooth
-        rel_pos = graph.edata['rel_pos']
-        edge_dists = torch.norm(rel_pos, dim=1)
-        gaussian_centers = torch.linspace(0, cutoff, num_basis_fns, device=rel_pos.device)
+    def subscale_fn(dist, cutoff):
+        subscale = torch.zeros_like(dist)
+        bump_fn = lambda x : torch.exp(1 - 1 / (1 - x**2))
+        subscale[dist < cutoff] = bump_fn(dist[dist < cutoff] / cutoff)
+        return subscale
+
+
+    def screened_coulomb(self, graph, dist, scale):
+        screened_energies = torch.zeros_like(dist)
+        support = (scale > 0)
+        Z = graph.ndata['species']
+        u, v = graph.edges()
+        energy_unit = self.coulomb_energy_unit / self.energy_std
+        coulomb_energies = energy_unit * Z[u[support]] * Z[v[support]] / (2 * dist[support])  # / 2 for both directions
+        screened_energies[support] = coulomb_energies * scale[support]  # Screen coulomb energies
+        return screened_energies
+
+    def get_radial_basis(self, dist) -> Tensor:
+        gaussian_centers = torch.linspace(0, self.cutoff, self.num_channels-1, device=dist.device)
         dx = gaussian_centers[1] - gaussian_centers[0]
-        diffs = edge_dists[:,None] - gaussian_centers[None,:]
+        diffs = dist[:,None] - gaussian_centers[None,:]
         return torch.exp(-2 * diffs**2 / dx**2)
+
+    @staticmethod
+    def loss_fn(pred, target):
+        energy_loss = F.mse_loss(pred[0], target[0])
+        forces_loss = F.mse_loss(pred[1], target[1])
+        return energy_loss, forces_loss
 
     @staticmethod
     def add_argparse_args(parent_parser):

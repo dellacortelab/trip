@@ -24,7 +24,6 @@ from typing import Mapping, Optional, List, Dict
 
 import torch
 from torch import Tensor
-import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from se3_transformer.data_loading.data_module import DataModule
@@ -109,8 +108,10 @@ class TrIPDataModule(DataModule):
                             help='Directory where the data is located or should be downloaded')
         parser.add_argument('--force_weight', type=float, default=0.1,
                             help='Weigh force losses to energy losses')
-        parser.add_argument('--cutoff', type=float, default=4.0,
+        parser.add_argument('--cutoff', type=float, default=4.6,
                             help='Radius of graph neighborhood')
+        parser.add_argument('--screen', type=float, default=1.0,
+                            help='Distance where Coloumb force between nuclei begins dominating')
         return parent_parser
 
     @staticmethod
@@ -128,12 +129,6 @@ class TrIPDataModule(DataModule):
                 forces_list.append(torch.tensor(forces_data[i][j], dtype=torch.float32))
                 box_list.append(torch.tensor(box_data[i][j], dtype=torch.float32))
         return species_list, pos_list, energy_list, forces_list, box_list
-
-    @staticmethod
-    def loss_fn(pred, target):
-        energy_loss = F.mse_loss(pred[0], target[0])
-        forces_loss = F.mse_loss(pred[1], target[1])
-        return energy_loss, forces_loss
 
 
 class TrIPDataset(Dataset):
@@ -158,7 +153,6 @@ class TrIPDataset(Dataset):
 
         self.si_tensor = si_tensor
         self.energy_std = energy_std
-
         self.species_list = species_list
         self.pos_list = pos_list
         self.energy_list = energy_list

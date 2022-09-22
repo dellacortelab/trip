@@ -54,7 +54,7 @@ def evaluate(model: nn.Module,
             callback.on_batch_start()
 
         with torch.cuda.amp.autocast(enabled=args.amp):
-            pred = model(graph, create_graph=False)
+            pred = model(graph, create_graph=False, standardized=True)
 
             for callback in callbacks:
                 callback.on_validation_step(graph, target, pred)

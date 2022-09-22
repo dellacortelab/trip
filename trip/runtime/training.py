@@ -64,7 +64,7 @@ def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
             callback.on_batch_start()
 
         with torch.cuda.amp.autocast(enabled=args.amp):
-            pred = model(graph, create_graph=True)
+            pred = model(graph, create_graph=True, standardized=True)
             energy_loss, forces_loss = loss_fn(pred, target)
             energy_loss /= args.accumulate_grad_batches
             forces_loss /= args.accumulate_grad_batches
@@ -214,10 +214,11 @@ if __name__ == '__main__':
 
     graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP(
+        energy_std=energy_std,
         tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )
-    loss_fn = datamodule.loss_fn
+    loss_fn = TrIP.loss_fn
 
     if args.benchmark:
         logging.info('Running benchmark mode')
