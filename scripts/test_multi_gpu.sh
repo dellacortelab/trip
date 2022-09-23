@@ -16,7 +16,6 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=gpu --max_restarts 0
   --gamma 0.5 \
   --cutoff 4.6 \
   --weight_decay "$WEIGHT_DECAY" \
-  --gate \
   --use_layer_norm \
   --norm \
   --save_ckpt_path model_ani1x.pth \
@@ -27,3 +26,4 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=gpu --max_restarts 0
   --eval_interval 1 \
   --force_weight 0.1 \
   --trip_file /results/test.trip \
+  --ckpt_interval 1 \

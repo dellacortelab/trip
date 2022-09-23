@@ -30,16 +30,16 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.parallel import DistributedDataParallel
 from torch.optim import Optimizer
 
+import dgl
 from dgl import DGLGraph
 
 from se3_transformer.model.basis import get_basis, update_basis_with_fused
 from se3_transformer.model.layers.attention import AttentionBlockSE3
 from se3_transformer.model.layers.convolution import ConvSE3, ConvSE3FuseLevel
 from se3_transformer.model.fiber import Fiber
-from se3_transformer.model.transformer import Sequential, get_populated_edge_features
+from se3_transformer.model.transformer import get_populated_edge_features
 from se3_transformer.runtime.utils import str2bool, get_local_rank
 
 from trip.model.layers import TrIPNorm
@@ -114,7 +114,7 @@ class SE3TransformerTrIP(nn.Module):
                                      pool=False,
                                      use_layer_norm=use_layer_norm,
                                      max_degree=self.max_degree))
-        self.graph_modules = Sequential(*graph_modules)
+        self.graph_modules = nn.ModuleList(graph_modules)
 
     def forward(self,
                 graph: DGLGraph,
@@ -135,8 +135,18 @@ class SE3TransformerTrIP(nn.Module):
 
         edge_feats = get_populated_edge_features(graph.edata['rel_pos'], edge_feats)
 
-        feats = self.graph_modules(node_feats, edge_feats, graph=graph, basis=basis, scale=scale)
+        feats = self.forward_graph_modules(node_feats, edge_feats, graph=graph, basis=basis, scale=scale)
         return feats['0'].squeeze(-1)
+
+    def forward_graph_modules(self, node_feats, edge_feats, graph, basis, scale):
+        for module in self.graph_modules:
+            node_feats = module(node_feats, edge_feats, graph, basis, scale)
+            if isinstance(module, AttentionBlockSE3):
+                # Residual edge connection, allows more information to pass to radial profile
+                num_edge_channels = min(node_feats['0'].shape[1], edge_feats['0'].shape[1]) 
+                edge_feats['0'][:,:num_edge_channels] = edge_feats['0'][:,:num_edge_channels] + dgl.ops.copy_u(graph, node_feats['0'][:,:num_edge_channels])
+
+        return node_feats
 
     @staticmethod
     def add_argparse_args(parser):
@@ -146,8 +156,6 @@ class SE3TransformerTrIP(nn.Module):
                             help='Number of heads in self-attention')
         parser.add_argument('--channels_div', type=int, default=2,
                             help='Channels division before feeding to attention layer')
-        parser.add_argument('--gate', type=str2bool, nargs='?', const=True, default=False,
-                            help='Apply a gated nonlinear layer after each attention block')
         parser.add_argument('--norm', type=str2bool, nargs='?', const=True, default=False,
                             help='Apply a normalization layer after each attention block')
         parser.add_argument('--use_layer_norm', type=str2bool, nargs='?', const=True, default=False,
@@ -280,9 +288,8 @@ class TrIP(nn.Module):
     def save(self, optimizer: Optimizer, epoch: int, path: pathlib.Path):
         """ Saves model, optimizer and epoch states to path (only once per node) """
         if get_local_rank() == 0:
-            state_dict = self.model.module.state_dict() if isinstance(self.model, DistributedDataParallel) else self.model.state_dict()
             checkpoint = {
-                'state_dict': state_dict,
+                'state_dict': self.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'kwargs': self.kwargs,
                 'epoch': epoch
@@ -296,11 +303,8 @@ class TrIP(nn.Module):
         checkpoint = torch.load(str(path), map_location=map_location)
         kwargs = checkpoint['kwargs']
         model = TrIP(**kwargs)
-        
-        if isinstance(model, DistributedDataParallel):
-            model.module.load_state_dict(checkpoint['state_dict'])
-        else:
-            model.load_state_dict(checkpoint['state_dict'])
+
+        model.load_state_dict(checkpoint['state_dict'])
 
         if not optimizer:
             return model
@@ -309,14 +313,10 @@ class TrIP(nn.Module):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         return model, optimizer
 
-    @staticmethod
-    def load_state(model, optimizer, path: pathlib.Path, map_location, checkpoint=None):
+    def load_state(self, path: pathlib.Path, map_location, optimizer=False, checkpoint=None):
         if checkpoint is None:
             checkpoint = torch.load(str(path), map_location=map_location)
-        if isinstance(model, DistributedDataParallel):
-            model.module.load_state_dict(checkpoint['state_dict'])
-        else:
-            model.load_state_dict(checkpoint['state_dict'])
+        self.load_state_dict(checkpoint['state_dict'])
         if optimizer:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         return checkpoint['epoch']

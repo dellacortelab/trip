@@ -102,13 +102,6 @@ class TrIPDataModule(DataModule):
         return species, pos_list, box_size_list, target
 
     @staticmethod
-    def add_argparse_args(parent_parser):
-        parser = parent_parser.add_argument_group("TrIP dataset")
-        parser.add_argument('--trip_file', type=pathlib.Path, default=pathlib.Path('/results/ani1x.trip'),
-                            help='Directory where the data is located or should be downloaded')
-        return parent_parser
-
-    @staticmethod
     def _to_ds_format(species_data, pos_data, energy_data, forces_data, box_data):
         species_list = []
         pos_list = []
@@ -123,6 +116,13 @@ class TrIPDataModule(DataModule):
                 forces_list.append(torch.tensor(forces_data[i][j], dtype=torch.float32))
                 box_list.append(torch.tensor(box_data[i][j], dtype=torch.float32))
         return species_list, pos_list, energy_list, forces_list, box_list
+
+    @staticmethod
+    def add_argparse_args(parent_parser):
+        parser = parent_parser.add_argument_group("TrIP dataset")
+        parser.add_argument('--trip_file', type=pathlib.Path, default=pathlib.Path('/results/ani1x.trip'),
+                            help='Directory where the data is located or should be downloaded')
+        return parent_parser
 
 
 class TrIPDataset(Dataset):

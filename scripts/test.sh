@@ -15,7 +15,6 @@ python -m trip.runtime.training \
   --gamma 0.5 \
   --cutoff 4.6 \
   --weight_decay "$WEIGHT_DECAY" \
-  --gate \
   --use_layer_norm \
   --norm \
   --save_ckpt_path model_ani1x.pth \

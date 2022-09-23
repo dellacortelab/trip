@@ -53,7 +53,8 @@ from trip.runtime.inference import evaluate
 def save_state(model: nn.Module, optimizer: Optimizer, epoch: int, path: pathlib.Path, callbacks: List[BaseCallback]):
     """ Saves model, optimizer and epoch states to path (only once per node) """
     if get_local_rank() == 0:
-        checkpoint = model.save(optimizer, epoch, path)
+        module = model.module if isinstance(model, DistributedDataParallel) else model
+        checkpoint = module.save(optimizer, epoch, path)
         for callback in callbacks:
             callback.on_checkpoint_save(checkpoint)
 
@@ -61,7 +62,8 @@ def save_state(model: nn.Module, optimizer: Optimizer, epoch: int, path: pathlib
 
 def load_state(model: nn.Module, optimizer: Optimizer, path: pathlib.Path, callbacks: List[BaseCallback]):
     map_location = {'cuda:0': f'cuda:{get_local_rank()}'}
-    checkpoint = TrIP.load_state(model, optimizer, path, map_location)
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    checkpoint = module.load_state(module, optimizer, path, map_location)
 
     for callback in callbacks:
         callback.on_checkpoint_load(checkpoint)
@@ -119,7 +121,7 @@ def train(model: nn.Module,
     model.to(device=device)
     local_rank = get_local_rank()
     world_size = dist.get_world_size() if dist.is_initialized() else 1
-    last_mlp_weight = f'mlp.{len(model.mlp)-1}.weight'
+    last_mlp_weight = f'model.mlp.{len(model.model.mlp)-1}.weight'
 
     if dist.is_initialized():
         model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
