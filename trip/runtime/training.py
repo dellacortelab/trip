@@ -26,29 +26,48 @@ import pathlib
 from typing import List
 
 import numpy as np
+from tqdm import tqdm
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from apex.optimizers import FusedAdam, FusedLAMB
 from torch.nn.modules.loss import _Loss
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
-from tqdm import tqdm
 
-from trip.model import TrIP
 from se3_transformer.runtime import gpu_affinity
-from trip.runtime.arguments import PARSER
-from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback
 from se3_transformer.runtime.callbacks import BaseCallback, PerformanceCallback
-from trip.runtime.inference import evaluate
 from se3_transformer.runtime.loggers import LoggerCollection, DLLogger, WandbLogger, Logger
+from se3_transformer.runtime.training import print_parameters_count
 from se3_transformer.runtime.utils import to_cuda, get_local_rank, init_distributed, seed_everything, \
     using_tensor_cores, increase_l2_fetch_granularity
+
 from trip.data_loading import GraphConstructor, TrIPDataModule
+from trip.model import TrIP
+from trip.runtime.arguments import PARSER
+from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback
+from trip.runtime.inference import evaluate
 
-from se3_transformer.runtime.training import save_state, load_state, print_parameters_count
 
+def save_state(model: nn.Module, optimizer: Optimizer, epoch: int, path: pathlib.Path, callbacks: List[BaseCallback]):
+    """ Saves model, optimizer and epoch states to path (only once per node) """
+    if get_local_rank() == 0:
+        checkpoint = model.save(optimizer, epoch, path)
+        for callback in callbacks:
+            callback.on_checkpoint_save(checkpoint)
+
+        logging.info(f'Saved checkpoint to {str(path)}')
+
+def load_state(model: nn.Module, optimizer: Optimizer, path: pathlib.Path, callbacks: List[BaseCallback]):
+    map_location = {'cuda:0': f'cuda:{get_local_rank()}'}
+    checkpoint = TrIP.load_state(model, optimizer, path, map_location)
+
+    for callback in callbacks:
+        callback.on_checkpoint_load(checkpoint)
+
+    logging.info(f'Loaded checkpoint from {str(path)}')
+    return checkpoint['epoch']
 
 def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
                 grad_scaler, optimizer, local_rank, callbacks, args):
@@ -86,8 +105,8 @@ def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
 
     return np.mean(energy_losses), np.mean(forces_losses)
 
-
 def train(model: nn.Module,
+          optimizer: Optimizer,
           graph_constructor: GraphConstructor,
           loss_fn: _Loss,
           train_dataloader: DataLoader,
@@ -109,18 +128,6 @@ def train(model: nn.Module,
 
     model.train()
     grad_scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
-
-    parameters = add_weight_decay(model, weight_decay=args.weight_decay, skip_list=[last_mlp_weight])
-    if args.optimizer == 'adam':
-        optimizer = FusedAdam(parameters, lr=args.learning_rate, betas=(args.momentum, 0.999),
-                              weight_decay=args.weight_decay)
-    elif args.optimizer == 'lamb':
-        optimizer = FusedLAMB(parameters, lr=args.learning_rate, betas=(args.momentum, 0.999),
-                              weight_decay=args.weight_decay)
-    else:
-        optimizer = torch.optim.SGD(parameters, lr=args.learning_rate, momentum=args.momentum,
-                                    weight_decay=args.weight_decay)
-
     epoch_start = load_state(model, optimizer, args.load_ckpt_path, callbacks) if args.load_ckpt_path else 0
 
     for callback in callbacks:
@@ -170,20 +177,6 @@ def train(model: nn.Module,
     for callback in callbacks:
         callback.on_fit_end()
 
-# https://discuss.pytorch.org/t/weight-decay-in-the-optimizers-is-a-bad-idea-especially-with-batchnorm/16994/3
-def add_weight_decay(model, weight_decay, skip_list=()):
-    decay = []
-    no_decay = []
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if len(param.shape) == 1 or name in skip_list:
-            no_decay.append(param)
-        else:
-            decay.append(param)
-    return [
-        {'params': no_decay, 'weight_decay': 0.},
-        {'params': decay, 'weight_decay': weight_decay}]
 
 if __name__ == '__main__':
     is_distributed = init_distributed()
@@ -205,8 +198,7 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    si_dict = {}
-    si_dict = {1:-0.3884, 6:-37.7641, 7:-54.2119, 8:-74.9005} # Found from DFT calculations of singlet energies state
+    si_dict = {1:-0.3884, 6:-37.7641, 7:-54.2119, 8:-74.9005}  # Found from DFT calculations of singlet energies state
     #si_dict = {1:-0.60068572, 6:-38.08356632, 7:-54.70753352, 8:-75.19417402} # Found from linear regression
     datamodule = TrIPDataModule(si_dict=si_dict, **vars(args))
     energy_std = datamodule.get_energy_std().item()
@@ -218,6 +210,7 @@ if __name__ == '__main__':
         tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )
+    optimizer = TrIP.make_optimizer(model, **vars(args))
     loss_fn = TrIP.loss_fn
 
     if args.benchmark:
@@ -236,6 +229,7 @@ if __name__ == '__main__':
     logger.log_hyperparams(vars(args))
     increase_l2_fetch_granularity()
     train(model,
+          optimizer,
           graph_constructor,
           loss_fn,
           datamodule.train_dataloader(),

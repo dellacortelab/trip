@@ -29,7 +29,7 @@ from torch.utils.data import Dataset
 from se3_transformer.data_loading.data_module import DataModule
 
 from trip.data import AtomicData
-from trip.data_loading.trip_container import TrIPContainer
+from trip.data_loading import Container
 
 
 class TrIPDataModule(DataModule):
@@ -54,7 +54,7 @@ class TrIPDataModule(DataModule):
 
     def load_data(self, trip_file: pathlib.Path):
         # Load data
-        container = TrIPContainer(trip_file)
+        container = Container(trip_file)
 
         # Process data
         self.species_list = self._calc_species_list(container)
@@ -106,12 +106,6 @@ class TrIPDataModule(DataModule):
         parser = parent_parser.add_argument_group("TrIP dataset")
         parser.add_argument('--trip_file', type=pathlib.Path, default=pathlib.Path('/results/ani1x.trip'),
                             help='Directory where the data is located or should be downloaded')
-        parser.add_argument('--force_weight', type=float, default=0.1,
-                            help='Weigh force losses to energy losses')
-        parser.add_argument('--cutoff', type=float, default=4.6,
-                            help='Radius of graph neighborhood')
-        parser.add_argument('--screen', type=float, default=1.0,
-                            help='Distance where Coloumb force between nuclei begins dominating')
         return parent_parser
 
     @staticmethod
@@ -179,3 +173,4 @@ class TrIPDataset(Dataset):
         energy = (energy-adjustment) / self.energy_std
         forces = forces / self.energy_std  # Linear property of derivatives requires this
         return species, pos, energy, forces, box_size
+        

@@ -21,12 +21,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
 # SPDX-License-Identifier: MIT
 
-from typing import Optional, Literal, Dict
+from copy import deepcopy
+import pathlib
+from typing import Optional, Dict
 
+from apex.optimizers import FusedAdam, FusedLAMB
 import torch
+from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
+from torch.nn.parallel import DistributedDataParallel
+from torch.optim import Optimizer
 
 from dgl import DGLGraph
 
@@ -35,12 +40,11 @@ from se3_transformer.model.layers.attention import AttentionBlockSE3
 from se3_transformer.model.layers.convolution import ConvSE3, ConvSE3FuseLevel
 from se3_transformer.model.fiber import Fiber
 from se3_transformer.model.transformer import Sequential, get_populated_edge_features
-from se3_transformer.runtime.utils import str2bool
+from se3_transformer.runtime.utils import str2bool, get_local_rank
 
-from trip.model.gate import TrIPGate
-from trip.model.norm import TrIPNorm
-from trip.model.pooling import SumPoolingEdges
-from trip.model.weighted_edge_softmax import WeightedEdgeSoftmax
+from trip.model.layers import TrIPNorm
+from trip.model.layers import SumPoolingEdges
+from trip.model.layers import WeightedEdgeSoftmax
 
         
 class SE3TransformerTrIP(nn.Module):
@@ -86,13 +90,11 @@ class SE3TransformerTrIP(nn.Module):
             # Fully fused convolutions when using Tensor Cores (and not low memory mode)
             self.fuse_level = ConvSE3FuseLevel.FULL if tensor_cores else ConvSE3FuseLevel.PARTIAL
 
-        fiber_conv = TrIPGate.make_input_fiber(fiber_hidden) if gate else fiber_hidden
-
         graph_modules = []
         for _ in range(num_layers):
             # TODO: Make fiber_conv and fiber_hidden distinction understandable
             graph_modules.append(AttentionBlockSE3(fiber_in=fiber_in,
-                                                   fiber_out=fiber_conv,
+                                                   fiber_out=fiber_hidden,
                                                    fiber_edge=fiber_edge,
                                                    num_heads=num_heads,
                                                    channels_div=channels_div,
@@ -102,9 +104,7 @@ class SE3TransformerTrIP(nn.Module):
                                                    low_memory=low_memory,
                                                    edge_softmax_fn=WeightedEdgeSoftmax()))
             if norm:
-                graph_modules.append(TrIPNorm(fiber_conv, nonlinearity = lambda x : x))
-            if gate:
-                graph_modules.append(TrIPGate(fiber_conv))
+                graph_modules.append(TrIPNorm(fiber_hidden, nonlinearity = lambda x : x))
             fiber_in = fiber_hidden
 
         graph_modules.append(ConvSE3(fiber_in=fiber_in,
@@ -159,14 +159,14 @@ class SE3TransformerTrIP(nn.Module):
         return parser
 
 
-class TrIP(nn.Module):
+class TrIPModel(nn.Module):
     def __init__(self,
                  num_degrees: int,
                  num_channels: int,
                  energy_std: float,
                  screen: float,
                  cutoff: float,
-                 coulomb_energy_unit: float = 0.529_177_211,  # e^2/(4*pi*e0) in Ha*A
+                 coulomb_energy_unit: float,
                  **kwargs):
         super().__init__()
         self.num_degrees = num_degrees
@@ -235,22 +235,121 @@ class TrIP(nn.Module):
         subscale[dist < cutoff] = bump_fn(dist[dist < cutoff] / cutoff)
         return subscale
 
-
     def screened_coulomb(self, graph, dist, scale):
         screened_energies = torch.zeros_like(dist)
         support = (scale > 0)
         Z = graph.ndata['species']
         u, v = graph.edges()
         energy_unit = self.coulomb_energy_unit / self.energy_std
-        coulomb_energies = energy_unit * Z[u[support]] * Z[v[support]] / (2 * dist[support])  # / 2 for both directions
-        screened_energies[support] = coulomb_energies * scale[support]  # Screen coulomb energies
+        coulomb_factor = Z[u[support]] * Z[v[support]] / (2 * dist[support])  # / 2 for both directions
+        screened_energies[support] = energy_unit * coulomb_factor * scale[support]  # Screen coulomb energies
         return screened_energies
 
     def get_radial_basis(self, dist) -> Tensor:
-        gaussian_centers = torch.linspace(0, self.cutoff, self.num_channels-1, device=dist.device)
+        gaussian_centers = torch.linspace(0, self.cutoff,
+                                          self.num_channels-1, device=dist.device)
         dx = gaussian_centers[1] - gaussian_centers[0]
         diffs = dist[:,None] - gaussian_centers[None,:]
         return torch.exp(-2 * diffs**2 / dx**2)
+
+    @staticmethod
+    def add_argparse_args(parser):
+        SE3TransformerTrIP.add_argparse_args(parser)
+        parser.add_argument('--coulomb_energy_unit',
+                            help='Value of e^2/(4*pi*e0) in preferred units, default is Ha*A',
+                            type=float, default=0.529_177_211)  # e^2/(4*pi*e0) in Ha*A)
+        parser.add_argument('--num_degrees',
+                            help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
+                            type=int, default=3)
+        parser.add_argument('--num_channels',
+                            help='Number of channels for the hidden features',
+                            type=int, default=16)
+        return parser
+
+
+class TrIP(nn.Module):
+    def __init__(self,
+                **kwargs):
+        super().__init__()
+        self.model = TrIPModel(**kwargs)
+        self.kwargs = deepcopy(kwargs)
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
+    def save(self, optimizer: Optimizer, epoch: int, path: pathlib.Path):
+        """ Saves model, optimizer and epoch states to path (only once per node) """
+        if get_local_rank() == 0:
+            state_dict = self.model.module.state_dict() if isinstance(self.model, DistributedDataParallel) else self.model.state_dict()
+            checkpoint = {
+                'state_dict': state_dict,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'kwargs': self.kwargs,
+                'epoch': epoch
+            }
+            torch.save(checkpoint, str(path))
+        return checkpoint
+
+    @staticmethod
+    def load(path: pathlib.Path, map_location='cuda:0', optimizer=False):
+        """ Loads model, optimizer and epoch states from path """
+        checkpoint = torch.load(str(path), map_location=map_location)
+        kwargs = checkpoint['kwargs']
+        model = TrIP(**kwargs)
+        
+        if isinstance(model, DistributedDataParallel):
+            model.module.load_state_dict(checkpoint['state_dict'])
+        else:
+            model.load_state_dict(checkpoint['state_dict'])
+
+        if not optimizer:
+            return model
+        
+        optimizer = TrIP.make_optimizer(model, **kwargs)
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        return model, optimizer
+
+    @staticmethod
+    def load_state(model, optimizer, path: pathlib.Path, map_location, checkpoint=None):
+        if checkpoint is None:
+            checkpoint = torch.load(str(path), map_location=map_location)
+        if isinstance(model, DistributedDataParallel):
+            model.module.load_state_dict(checkpoint['state_dict'])
+        else:
+            model.load_state_dict(checkpoint['state_dict'])
+        if optimizer:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        return checkpoint['epoch']
+
+    @staticmethod
+    def make_optimizer(model, optimizer, learning_rate, momentum, weight_decay, **kwargs):
+        parameters = TrIP.add_weight_decay(model, weight_decay)
+        if optimizer == 'adam':
+            optimizer = FusedAdam(parameters, lr=learning_rate, betas=(momentum, 0.999),
+                                weight_decay=weight_decay)
+        elif optimizer == 'lamb':
+            optimizer = FusedLAMB(parameters, lr=learning_rate, betas=(momentum, 0.999),
+                                weight_decay=weight_decay)
+        else:
+            optimizer = torch.optim.SGD(parameters, lr=learning_rate, momentum=momentum,
+                                        weight_decay=weight_decay)
+        return optimizer
+
+    @staticmethod
+    # https://discuss.pytorch.org/t/weight-decay-in-the-optimizers-is-a-bad-idea-especially-with-batchnorm/16994/3
+    def add_weight_decay(model, weight_decay, skip_list=[]):
+        decay = []
+        no_decay = []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if len(param.shape) == 1 or name in skip_list:
+                no_decay.append(param)
+            else:
+                decay.append(param)
+        return [
+            {'params': no_decay, 'weight_decay': 0.},
+            {'params': decay, 'weight_decay': weight_decay}]
 
     @staticmethod
     def loss_fn(pred, target):
@@ -258,12 +357,20 @@ class TrIP(nn.Module):
         forces_loss = F.mse_loss(pred[1], target[1])
         return energy_loss, forces_loss
 
-    @staticmethod
     def add_argparse_args(parent_parser):
+        optimizer = parent_parser.add_argument_group('Optimizer')
+        optimizer.add_argument('--optimizer', choices=['adam', 'sgd', 'lamb'], default='adam')
+        optimizer.add_argument('--learning_rate', '--lr', dest='learning_rate', type=float, default=0.002)
+        optimizer.add_argument('--gamma', type=float, default=1.0)
+        optimizer.add_argument('--momentum', type=float, default=0.9)
+        optimizer.add_argument('--weight_decay', type=float, default=0.1)
+
         parser = parent_parser.add_argument_group("Model architecture")
-        SE3TransformerTrIP.add_argparse_args(parser)
-        parser.add_argument('--num_degrees',
-                            help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
-                            type=int, default=3)
-        parser.add_argument('--num_channels', help='Number of channels for the hidden features', type=int, default=16)
+        parser.add_argument('--force_weight', type=float, default=0.1,
+                            help='Weigh force losses to energy losses')
+        parser.add_argument('--cutoff', type=float, default=4.6,
+                            help='Radius of graph neighborhood')
+        parser.add_argument('--screen', type=float, default=1.0,
+                            help='Distance where Coloumb force between nuclei begins dominating')
+        TrIPModel.add_argparse_args(parser)
         return parent_parser

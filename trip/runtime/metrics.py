@@ -26,6 +26,7 @@ from torch import Tensor
 
 from se3_transformer.runtime.metrics import Metric
 
+
 class RootMeanSquaredError(Metric):
     def __init__(self):
         super().__init__()

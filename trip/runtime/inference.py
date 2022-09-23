@@ -22,12 +22,12 @@
 # SPDX-License-Identifier: MIT
 
 from typing import List
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from se3_transformer.runtime import gpu_affinity
 from se3_transformer.runtime.callbacks import BaseCallback
@@ -37,6 +37,7 @@ from se3_transformer.runtime.utils import to_cuda, get_local_rank
 from trip.data_loading import GraphConstructor
 from trip.runtime.arguments import PARSER
 from trip.runtime.callbacks import TrIPMetricCallback
+from trip.model import TrIP
 
 
 def evaluate(model: nn.Module,
@@ -44,7 +45,7 @@ def evaluate(model: nn.Module,
              dataloader: DataLoader,
              callbacks: List[BaseCallback],
              args):
-    for i, batch in tqdm(enumerate(dataloader), total=len(dataloader), unit='batch', desc=f'Evaluation',
+    for _, batch in tqdm(enumerate(dataloader), total=len(dataloader), unit='batch', desc=f'Evaluation',
                          leave=False, disable=(args.silent or get_local_rank() != 0)):
         species, pos_list, box_size_list, target = to_cuda(batch)
         graph = graph_constructor.create_graphs(pos_list, box_size_list)
@@ -62,10 +63,9 @@ def evaluate(model: nn.Module,
 
 if __name__ == '__main__':
     from se3_transformer.runtime.callbacks import PerformanceCallback
-    from trip.runtime.callbacks import MetricCallback
     from se3_transformer.runtime.utils import init_distributed, seed_everything
     from se3_transformer.model import Fiber
-    from trip.model import TrIP
+    from trip.model import TrIPModel
     from trip.data_loading import ANI1xDataModule
     import torch.distributed as dist
     import logging
@@ -95,24 +95,23 @@ if __name__ == '__main__':
 
     loggers = [DLLogger(save_dir=args.log_dir, filename=args.dllogger_name)]
     if args.wandb:
-        loggers.append(WandbLogger(name=f'ANI1x', save_dir=args.log_dir, project='se3-transformer'))
+        loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
     datamodule = ANI1xDataModule(**vars(args))
+    energy_std = datamodule.get_energy_std().item()
     model = TrIP(
-        fiber_in=Fiber({0: datamodule.NODE_FEATURE_DIM}),
-        fiber_out=Fiber({0: args.num_degrees * args.num_channels}),
-        fiber_edge=Fiber({0: args.num_basis_fns}),
-        output_dim=1,
         tensor_cores=(args.amp and major_cc >= 7) or major_cc >= 8,  # use Tensor Cores more effectively
         **vars(args)
     )
-    callbacks = [TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='energy'),
-                 TrIPMetricCallback(logger, targets_std=datamodule.ENERGY_STD, prefix='forces')]
+    callbacks = [TrIPMetricCallback(logger, targets_std=energy_std, prefix='energy'),
+                 TrIPMetricCallback(logger, targets_std=energy_std, prefix='forces')]
 
     model.to(device=torch.cuda.current_device())
     if args.load_ckpt_path is not None:
-        checkpoint = torch.load(str(args.load_ckpt_path), map_location={'cuda:0': f'cuda:{local_rank}'})
-        model.load_state_dict(checkpoint['state_dict'])
+        TrIP.load_state(model=model,
+                        optimizer=False, 
+                        path=str(args.load_ckpt_path), 
+                        map_location={'cuda:0': f'cuda:{local_rank}'})
 
     if is_distributed:
         nproc_per_node = torch.cuda.device_count()

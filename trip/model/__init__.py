@@ -1,2 +1,1 @@
-from .transformer import TrIP
-from .gate import TrIPGate
+from .model import TrIP

@@ -21,13 +21,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
 # SPDX-License-Identifier: MIT
 
-
 import numpy as np
-import torch
 from mendeleev.fetch import fetch_ionization_energies
 from mendeleev import element
 
+import torch
+
+
 class AtomicData:
+    NUM_ELEMENTS = 100 # Number of elements that this class supports
     @staticmethod
     def get_si_energies(N=100):
         '''Get atomic self-interaction energies'''
@@ -39,5 +41,6 @@ class AtomicData:
         return si_tensor
 
     @staticmethod
-    def get_atomic_symbols_list(N=100):
+    def get_atomic_symbols_list(N=NUM_ELEMENTS):
         return [element[i].symbol for i in range(1,N+1)]
+

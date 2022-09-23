@@ -22,15 +22,10 @@
 # SPDX-License-Identifier: MIT
 
 import logging
-import time
-from abc import ABC, abstractmethod
-from typing import Optional
 
-import numpy as np
 import torch
 
 from se3_transformer.runtime.callbacks import BaseCallback
-from se3_transformer.runtime.loggers import Logger
 from se3_transformer.runtime.metrics import MeanAbsoluteError
 from trip.runtime.metrics import RootMeanSquaredError
 
@@ -83,3 +78,4 @@ class TrIPLRSchedulerCallback(LRSchedulerCallback):
 
     def get_scheduler(self, optimizer, args):
         return torch.optim.lr_scheduler.ExponentialLR(optimizer, args.gamma)
+        

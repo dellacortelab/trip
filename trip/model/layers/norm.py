@@ -21,18 +21,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
 # SPDX-License-Identifier: MIT
 
-import torch
-from torch import nn
-from torch.nn.parameter import Parameter
-from torch.nn import functional as F
-from torch.nn import init
-
-from torch import Tensor
-
 from typing import Dict
 
+import torch
+from torch import nn
 from torch import Tensor
+from torch.nn import init
+from torch.nn import functional as F
 from torch.cuda.nvtx import range as nvtx_range
+from torch.nn.parameter import Parameter
 
 from se3_transformer.model import Fiber
 

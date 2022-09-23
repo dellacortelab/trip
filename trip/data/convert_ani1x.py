@@ -1,9 +1,32 @@
+# Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#
+# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
+# SPDX-License-Identifier: MIT
+
 import os
 import h5py
 import numpy as np
 import torch
 
-from trip.data_loading.trip_container import TrIPContainer
+from trip.data_loading.container import Container
 
 
 def iter_data_buckets(h5filename, keys=['wb97x_dz.energy']):
@@ -48,7 +71,7 @@ num_array = np.arange(num)
 train_idx = num_array[num_array % 20 != 0]
 val_idx = num_array[num_array % 20 == 0]
 
-container = TrIPContainer()
+container = Container()
 
 
 def idx_lists(idx_list, *value_lists):
@@ -93,7 +116,7 @@ save_path = os.path.join(data_dir, 'ani1x.trip')
 container.save_data(save_path)
 
 # Now create a testing subset (not a test set)
-test_container = TrIPContainer()
+test_container = Container()
 
 subsets = ['train', 'val', 'test']
 
