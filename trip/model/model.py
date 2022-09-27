@@ -24,6 +24,7 @@
 from copy import deepcopy
 import pathlib
 from typing import Optional, Dict
+import numpy as np
 
 from apex.optimizers import FusedAdam, FusedLAMB
 import torch
@@ -254,11 +255,10 @@ class TrIPModel(nn.Module):
         return screened_energies
 
     def get_radial_basis(self, dist) -> Tensor:
-        gaussian_centers = torch.linspace(0, self.cutoff,
-                                          self.num_channels-1, device=dist.device)
-        dx = gaussian_centers[1] - gaussian_centers[0]
-        diffs = dist[:,None] - gaussian_centers[None,:]
-        return torch.exp(-2 * diffs**2 / dx**2)
+        n = torch.arange(1, self.num_channels, device = dist.device)
+        f = lambda n, x : torch.sin(np.pi * n * x) / x
+        radial_basis = f(n[None,:], dist[:,None]/self.cutoff)
+        return radial_basis
 
     @staticmethod
     def add_argparse_args(parser):
