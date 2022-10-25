@@ -23,6 +23,7 @@
 
 from copy import deepcopy
 import pathlib
+from tabnanny import check
 from typing import Optional, Dict
 import numpy as np
 
@@ -35,6 +36,7 @@ from torch.optim import Optimizer
 
 import dgl
 from dgl import DGLGraph
+from dgl.nn import SumPooling
 
 from se3_transformer.model.basis import get_basis, update_basis_with_fused
 from se3_transformer.model.layers.attention import AttentionBlockSE3
@@ -57,7 +59,6 @@ class SE3TransformerTrIP(nn.Module):
                  num_heads: int,
                  channels_div: int,
                  fiber_edge: Fiber = Fiber({}),
-                 gate: bool = True,
                  norm: bool = True,
                  use_layer_norm: bool = True,
                  tensor_cores: bool = False,
@@ -111,8 +112,8 @@ class SE3TransformerTrIP(nn.Module):
         graph_modules.append(ConvSE3(fiber_in=fiber_in,
                                      fiber_out=fiber_out,
                                      fiber_edge=fiber_edge,
-                                     self_interaction=False,
-                                     pool=False,
+                                     self_interaction=True,
+                                     pool=True,
                                      use_layer_norm=use_layer_norm,
                                      max_degree=self.max_degree))
         self.graph_modules = nn.ModuleList(graph_modules)
@@ -195,15 +196,17 @@ class TrIPModel(nn.Module):
             **kwargs
         )
         self.mlp = nn.Sequential(
+            nn.Linear(num_out_channels + num_channels, num_out_channels),
+            nn.SiLU(),
             nn.Linear(num_out_channels, num_out_channels),
             nn.SiLU(),
             nn.Linear(num_out_channels, 1)
         )
-        self.pool_edges = SumPoolingEdges()
+        self.pool = SumPooling()
 
     def forward(self, graph, forces=True, create_graph=False, standardized=False):
-        edge_energies = self.forward_edge_energies(graph)
-        energies = self.pool_edges(graph, edge_energies)
+        atom_energies = self.forward_atom_energies(graph)
+        energies = self.pool(graph, atom_energies)
 
         if not standardized: # Remove standardization
             energies = energies * self.energy_std
@@ -215,10 +218,9 @@ class TrIPModel(nn.Module):
                                       )[0]
         return energies, forces
 
-    def forward_edge_energies(self, graph):
+    def forward_atom_energies(self, graph):
         dist = torch.norm(graph.edata['rel_pos'], p=2, dim=1)
         scale = self.scale_fn(dist, self.cutoff)
-        subscale = self.subscale_fn(dist, self.screen)
 
         species_embedding = self.embedding(graph.ndata['species'] - 1)  # -1 so H starts at 0
         node_feats = {'0': species_embedding.unsqueeze(-1)}
@@ -226,35 +228,43 @@ class TrIPModel(nn.Module):
         edge_feats = {'0': radial_basis.unsqueeze(-1)}
 
         feats = self.transformer(graph, node_feats, edge_feats, scale)
-        learned_energies = self.mlp(feats).squeeze(-1) * scale
-        coulomb_energies = self.screened_coulomb(graph, dist, subscale)
+        cat_feats = torch.cat([species_embedding, feats], dim=1)
+        learned_energies = self.mlp(cat_feats).squeeze(-1)
+        coulomb_energies = self.screened_coulomb(graph, dist, scale)
         return learned_energies + coulomb_energies
 
     @staticmethod
     def scale_fn(dist, cutoff):
         scale = torch.zeros_like(dist)
-        bump_fn = lambda x : torch.exp(1 - 1 / (1 - x**2))
-        scale[dist < cutoff] = bump_fn(2 * dist[dist < cutoff] / cutoff -1)
+        scale[dist < cutoff] = TrIPModel.bump_fn(2 * dist[dist<cutoff] / cutoff - 1, k=4)
         return scale
 
     @staticmethod
-    def subscale_fn(dist, cutoff):
-        subscale = torch.zeros_like(dist)
-        bump_fn = lambda x : torch.exp(1 - 1 / (1 - x**2))
-        subscale[dist < cutoff] = bump_fn(dist[dist < cutoff] / cutoff)
-        return subscale
+    def bump_fn(x, k=1):
+        return torch.exp(k - k / (1 - x**2))
 
     def screened_coulomb(self, graph, dist, scale):
-        screened_energies = torch.zeros_like(dist)
-        support = (scale > 0)
         Z = graph.ndata['species']
         u, v = graph.edges()
-        energy_unit = self.coulomb_energy_unit / self.energy_std
-        coulomb_factor = Z[u[support]] * Z[v[support]] / (2 * dist[support])  # / 2 for both directions
-        screened_energies[support] = energy_unit * coulomb_factor * scale[support]  # Screen coulomb energies
-        return screened_energies
+        Z_u, Z_v = Z[u], Z[v]
+        raw_energies = self.coulomb_energy_unit * Z_u * Z_v / (2 * dist)  # / 2 for both directions
+        screen = TrIPModel.zbl_screening_fn(dist, Z_u, Z_v)
+        screened_energies = raw_energies * screen * scale  # Apply screening and cutoff function
+        atom_coulomb_energies = dgl.ops.copy_e_sum(graph, screened_energies)  # Pool energies from edges to nodes
+        return atom_coulomb_energies / self.energy_std
+
+    @staticmethod
+    def zbl_screening_fn(dist, Z_u, Z_v):
+        # Universal screening function from "The Stopping and Range of Ions in Solids" by Ziegler, J.F., et al. (1985)
+        au = 0.8854 * 0.529 / (Z_u**0.23 + Z_v**0.23)  # Universal screening length
+        x = dist / au
+        screen = 0.1818*torch.exp(-3.2*x) + 0.5099*torch.exp(-0.9423*x) + 0.2802*torch.exp(-0.4028*x) + 0.02817*torch.exp(-0.2016*x)
+        return screen
 
     def get_radial_basis(self, dist) -> Tensor:
+        return torch.zeros(len(dist), self.num_channels-1, device=dist.device, dtype=dist.dtype)
+
+        # TODO: This code seems to no longer be useful. Remove soon
         n = torch.arange(1, self.num_channels, device = dist.device)
         f = lambda n, x : torch.sin(np.pi * n * x) / x
         radial_basis = f(n[None,:], dist[:,None]/self.cutoff)
@@ -265,7 +275,7 @@ class TrIPModel(nn.Module):
         SE3TransformerTrIP.add_argparse_args(parser)
         parser.add_argument('--coulomb_energy_unit',
                             help='Value of e^2/(4*pi*e0) in preferred units, default is Ha*A',
-                            type=float, default=0.529_177_211)  # e^2/(4*pi*e0) in Ha*A)
+                            type=float, default=0.529)  # e^2/(4*pi*e0) in Ha*A)
         parser.add_argument('--num_degrees',
                             help='Number of degrees to use. Hidden features will have types [0, ..., num_degrees - 1]',
                             type=int, default=3)
@@ -280,6 +290,7 @@ class TrIP(nn.Module):
                 **kwargs):
         super().__init__()
         self.model = TrIPModel(**kwargs)
+        self._optimizer = TrIP.make_optimizer(self, **kwargs)
         self.kwargs = deepcopy(kwargs)
 
     def forward(self, *args, **kwargs):
@@ -290,44 +301,42 @@ class TrIP(nn.Module):
         if get_local_rank() == 0:
             checkpoint = {
                 'state_dict': self.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict() if optimizer else None,
                 'kwargs': self.kwargs,
                 'epoch': epoch
             }
             torch.save(checkpoint, str(path))
         return checkpoint
 
+    def load_state(self, checkpoint, map_location):
+        if isinstance(checkpoint, pathlib.Path) or isinstance(checkpoint, str):
+            checkpoint = torch.load(str(checkpoint), map_location=map_location)
+        self.load_state_dict(checkpoint['state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.kwargs = deepcopy(checkpoint['kwargs'])
+        return checkpoint['epoch']
+
+    @property
+    def optimizer(self):
+        return self._optimizer
+
     @staticmethod
-    def load(path: pathlib.Path, map_location='cuda:0', optimizer=False):
+    def load(path: pathlib.Path, map_location='cuda:0'):
         """ Loads model, optimizer and epoch states from path """
         checkpoint = torch.load(str(path), map_location=map_location)
         kwargs = checkpoint['kwargs']
         model = TrIP(**kwargs)
-
-        model.load_state_dict(checkpoint['state_dict'])
-
-        if not optimizer:
-            return model
-        
-        optimizer = TrIP.make_optimizer(model, **kwargs)
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        return model, optimizer
-
-    def load_state(self, path: pathlib.Path, map_location, optimizer=False, checkpoint=None):
-        if checkpoint is None:
-            checkpoint = torch.load(str(path), map_location=map_location)
-        self.load_state_dict(checkpoint['state_dict'])
-        if optimizer:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        return checkpoint['epoch']
+        model.load_state(checkpoint, map_location)
+        return model
 
     @staticmethod
-    def make_optimizer(model, optimizer, learning_rate, momentum, weight_decay, **kwargs):
-        parameters = TrIP.add_weight_decay(model, weight_decay)
-        if optimizer == 'adam':
+    def make_optimizer(model, optimizer_type, learning_rate, momentum, weight_decay, **kwargs):
+        parameters = TrIP.add_weight_decay(model, weight_decay, skip_list=['model.embedding.weight',
+                                                                           'model.mlp.4.weight'])
+        if optimizer_type == 'adam':
             optimizer = FusedAdam(parameters, lr=learning_rate, betas=(momentum, 0.999),
                                 weight_decay=weight_decay)
-        elif optimizer == 'lamb':
+        elif optimizer_type == 'lamb':
             optimizer = FusedLAMB(parameters, lr=learning_rate, betas=(momentum, 0.999),
                                 weight_decay=weight_decay)
         else:
@@ -352,25 +361,27 @@ class TrIP(nn.Module):
             {'params': decay, 'weight_decay': weight_decay}]
 
     @staticmethod
-    def loss_fn(pred, target):
-        energy_loss = F.mse_loss(pred[0], target[0])
-        forces_loss = F.mse_loss(pred[1], target[1])
+    def loss_fn(pred, target, beta=1e-2):
+        calc_loss = lambda x : torch.mean(torch.sqrt(x + beta**2)) - beta
+        energy_loss = calc_loss((pred[0]- target[0])**2)
+        forces_loss = calc_loss(torch.sum((pred[1] - target[1])**2, dim=1))
         return energy_loss, forces_loss
 
+    @staticmethod
     def add_argparse_args(parent_parser):
-        optimizer = parent_parser.add_argument_group('Optimizer')
-        optimizer.add_argument('--optimizer', choices=['adam', 'sgd', 'lamb'], default='adam')
-        optimizer.add_argument('--learning_rate', '--lr', dest='learning_rate', type=float, default=0.002)
-        optimizer.add_argument('--gamma', type=float, default=1.0)
-        optimizer.add_argument('--momentum', type=float, default=0.9)
-        optimizer.add_argument('--weight_decay', type=float, default=0.1)
+        opt_parser = parent_parser.add_argument_group('Optimizer')
+        opt_parser.add_argument('--optimizer_type', choices=['adam', 'sgd', 'lamb'], default='adam')
+        opt_parser.add_argument('--learning_rate', '--lr', dest='learning_rate', type=float, default=0.002)
+        opt_parser.add_argument('--gamma', type=float, default=1.0)
+        opt_parser.add_argument('--momentum', type=float, default=0.9)
+        opt_parser.add_argument('--weight_decay', type=float, default=0.1)
 
-        parser = parent_parser.add_argument_group("Model architecture")
-        parser.add_argument('--force_weight', type=float, default=0.1,
-                            help='Weigh force losses to energy losses')
-        parser.add_argument('--cutoff', type=float, default=4.6,
-                            help='Radius of graph neighborhood')
-        parser.add_argument('--screen', type=float, default=1.0,
+        model_parser = parent_parser.add_argument_group("Model architecture")
+        model_parser.add_argument('--force_weight', type=float, default=0.1,
+                                  help='Weigh force losses to energy losses')
+        model_parser.add_argument('--cutoff', type=float, default=4.6,
+                                  help='Radius of graph neighborhood')
+        model_parser.add_argument('--screen', type=float, default=1.5,
                             help='Distance where Coloumb force between nuclei begins dominating')
-        TrIPModel.add_argparse_args(parser)
+        TrIPModel.add_argparse_args(model_parser)
         return parent_parser

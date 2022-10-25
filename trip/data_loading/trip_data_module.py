@@ -20,7 +20,9 @@
 
 import bisect
 import pathlib
-from typing import Mapping, Optional, List, Dict
+from typing import List
+from collections import Counter
+import numpy as np
 
 import torch
 from torch import Tensor
@@ -37,66 +39,97 @@ class TrIPDataModule(DataModule):
                  trip_file: pathlib.Path,
                  batch_size: int = 1,
                  num_workers: int = 8,
-                 si_dict: Optional[Mapping[int, float]] = None,
                  **kwargs,
                  ):
         super().__init__(batch_size=batch_size, num_workers=num_workers, collate_fn=self._collate)
-        self.energy_std = None
-        self.si_tensor = self._create_si_tensor(si_dict)
-        self.load_data(trip_file)
+        self._load_data(trip_file)
 
-    def _create_si_tensor(self, si_dict: Mapping[int, float]):
-        si_tensor = AtomicData.get_si_energies()
-        if si_dict is not None:
-            for key, value in si_dict.items():
-                si_tensor[key -1] = value
-        return si_tensor
-
-    def load_data(self, trip_file: pathlib.Path):
+    def _load_data(self, trip_file: pathlib.Path):
         # Load data
         container = Container(trip_file)
 
-        # Process data
-        self.species_list = self._calc_species_list(container)
-        self.energy_std = self._calc_energy_std(container)
+        # Preprocess data
+        self._species_list = self._calc_species_list(container)
+        self._ebe_tensor = AtomicData.get_ebe_tensor()
+        self._si_tensor, self._energy_std = self._calc_si(container)
+        self._adjusted_ae_tensor = (self._ebe_tensor - self._si_tensor) / self._energy_std
 
         # Make dataset
         self.ds_train = self._make_ds(container, 'train')
         self.ds_val = self._make_ds(container, 'val')
         self.ds_test = self._make_ds(container, 'test')
 
-    def _calc_energy_std(self, container):
-        adjusted_energies_list = []
-        species_data, _, energy_data, _, *_ = container.get_data('train')
+    def _calc_si(self, container):
+        species_data, _, energy_data, _, _ = container.get_data('train')
+        species_list = self._species_list
+        
+        # Count number of species for each species_list in species_data
+        A = [list() for _ in species_list]
         for species_tensor, energy_tensor in zip(species_data, energy_data):
-            adjusted_energy_tensor = energy_tensor \
-                - torch.sum(self.si_tensor[(species_tensor-1).tolist()])  # Subtract SI energies
-            adjusted_energies_list.append(adjusted_energy_tensor)
-        adjusted_energies = torch.cat(adjusted_energies_list)
-        return torch.std(adjusted_energies)
+            counts = Counter(species_tensor.tolist())
+            num_copies = len(energy_tensor)
+            for i, s in enumerate(species_list):
+                A[i].extend(num_copies * [counts[s]])
+        
+        # Solve least squares problem
+        A = np.array(A, dtype=float).T
+        b = torch.cat(energy_data).numpy()
+        sol = np.linalg.lstsq(A, b, rcond=None)
 
+        # Create si_tensor
+        si_list = sol[0].tolist()
+        si_tensor = self._ebe_tensor.clone()
+        for s, e in zip(species_list, si_list):
+            si_tensor[s - 1] = e  # -1 so H starts at 0.
+
+        # Use residuals to calculate dataset std
+        sum_sq_residuals = sol[1][0]
+        std = np.sqrt(sum_sq_residuals / len(b))
+        return si_tensor, std
+                
     def _calc_species_list(self, container):
-        species = set()
-        for species_list in container.get_data('train')[0]:
-            species = species.union(set(species_list.tolist()))
-        return list(species)
+        species_data = container.get_data('train')[0]
+        species = {s for species_tensor in species_data for s in species_tensor.tolist()}
+        species_list = list(species)
+        species_list.sort()
+        return species_list
 
     def _make_ds(self, container, name):
-        ds = TrIPDataset(self.si_tensor,
-                         self.energy_std,
-                         *container.get_data(name),
-                         )
+        ds = TrIPDataset(self._si_tensor,
+                         self._energy_std,
+                         *container.get_data(name))
         return ds
 
-    def get_species_list(self):
-        return self.species_list
+    @property
+    def species_list(self):
+        return self._species_list.copy()
 
-    def get_energy_std(self):
-        return self.energy_std
+    @property
+    def si_tensor(self):
+        return self._si_tensor.clone()
 
-    @staticmethod
-    def _collate(samples):
+    @property
+    def energy_std(self):
+        return self._energy_std
+
+    def _collate(self, samples):
         species_list, pos_list, energy_list, forces_list, box_size_list = list(map(list, zip(*samples)))
+
+        # Temporary bad code for testing until better solution emerges
+        atom_species = self._species_list
+        atom_pos = [torch.zeros(1,3, dtype=torch.float32) for _ in atom_species]
+        atom_energy = [self._adjusted_ae_tensor[s - 1] for s in atom_species]
+        atom_forces = [torch.zeros((1,3), dtype=torch.float32) for _ in atom_species]
+        atom_box_size = [torch.full([3], float('inf'), dtype=torch.float32) for _ in atom_species]
+        atom_species = [torch.tensor([s], dtype=torch.long) for s in atom_species]
+
+        species_list.extend(atom_species)
+        pos_list.extend(atom_pos)
+        energy_list.extend(atom_energy)
+        forces_list.extend(atom_forces)
+        box_size_list.extend(atom_box_size)
+
+        # Resume good code
         species = torch.cat(species_list)
         target = torch.stack(energy_list), torch.cat(forces_list)
         return species, pos_list, box_size_list, target
@@ -136,7 +169,7 @@ class TrIPDataset(Dataset):
                  box_size_list: List[Tensor]):
         """
         :param si_tensor:           Tensor of self interaction energies sorted by atomic number.
-        :param energy_std:          Standard deviation of energies adjusted by subtracting ebe's
+        :param energy_std:          Standard deviation of energies adjusted by subtracting si energies.
         :param species_list:        List of tensors of atomic numbers (Shape: [N]).
         :param pos_list:            List of tensors of positions (Shape: [N,3]).
         :param energy_list:         List of floats of system energies.
@@ -154,20 +187,20 @@ class TrIPDataset(Dataset):
         self.box_size_list = box_size_list
 
         len_tensor = torch.tensor([len(pos_tensor) for pos_tensor in pos_list])
-        self.cum_sum = [0] + torch.cumsum(len_tensor, dim=0).tolist()
+        self.cumsum = [0] + torch.cumsum(len_tensor, dim=0).tolist()
 
     def __len__(self):
-        return self.cum_sum[-1]
+        return self.cumsum[-1]
 
     def __getitem__(self, item):
-        mol_idx = bisect.bisect_right(self.cum_sum, item) - 1  # Which molecules is being indexed
-        conf_idx = item - self.cum_sum[mol_idx]  # Which conformation of the molecule is being indexed
+        mol_idx = bisect.bisect_right(self.cumsum, item) - 1  # Which molecules is being indexed
+        conf_idx = item - self.cumsum[mol_idx]  # Which conformation of the molecule is being indexed
         species = self.species_list[mol_idx]
         pos = self.pos_list[mol_idx][conf_idx]
         energy = self.energy_list[mol_idx][conf_idx]
         forces = self.forces_list[mol_idx][conf_idx]
         box_size = self.box_size_list[mol_idx][conf_idx]
-
+        
         # Normalize dataset
         adjustment = torch.sum(self.si_tensor[(species-1).tolist()])
         energy = (energy-adjustment) / self.energy_std

@@ -123,4 +123,3 @@ class Container:
             molecule.create_dataset('energy', data=energy_data[i])
             molecule.create_dataset('forces', data=forces_data[i])
             molecule.create_dataset('box_size', data=box_size_data[i])
-

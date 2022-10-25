@@ -108,11 +108,9 @@ if __name__ == '__main__':
 
     model.to(device=torch.cuda.current_device())
     if args.load_ckpt_path is not None:
-        TrIP.load_state(model=model,
-                        optimizer=False, 
-                        path=str(args.load_ckpt_path), 
+        model.load_state(path=str(args.load_ckpt_path), 
                         map_location={'cuda:0': f'cuda:{local_rank}'})
-
+                        
     if is_distributed:
         nproc_per_node = torch.cuda.device_count()
         affinity = gpu_affinity.set_affinity(local_rank, nproc_per_node)

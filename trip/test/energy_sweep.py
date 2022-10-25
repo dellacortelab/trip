@@ -1,15 +1,10 @@
 from trip.data_loading import GraphConstructor
 from trip.model import TrIP
 from se3_transformer.runtime.utils import to_cuda
-from trip.runtime.training import *
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
 
-from openmm.app import *
-from openmm import *
-from openmm.unit import *
-from sys import stdout
 #initialize parameters
 
 ######Load Model############
@@ -37,7 +32,7 @@ class SE3Module(torch.nn.Module):
             return energy.item()
 
 symbols = ['H','C','N','O']
-elements = ['hydrogen','carbon','nitrogen','oxygen']
+elements = ['Hydrogen','Carbon','Nitrogen','Oxygen']
 for symbol, name in zip(symbols, elements):
     species = [symbol, symbol]
     sm = SE3Module(model)
@@ -53,5 +48,5 @@ for symbol, name in zip(symbols, elements):
     data = np.array([r_array, e_array])
 
 plt.legend()
-plt.ylim(-1.2, 0.3)
-plt.savefig(f'/results/energy_sweep.png')
+plt.ylim(-1, 1)
+plt.savefig(f'/results/energy_sweep.png', dpi=300)

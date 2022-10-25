@@ -31,14 +31,14 @@ import torch
 class AtomicData:
     NUM_ELEMENTS = 100 # Number of elements that this class supports
     @staticmethod
-    def get_si_energies(N=100):
-        '''Get atomic self-interaction energies'''
+    def get_ebe_tensor(N=NUM_ELEMENTS):
+        '''Get atomic electron binding energies'''
         ionization_energies = fetch_ionization_energies(degree=list(range(1,N+1))).head(N)  # Fetch ionization energies in eV
         ie_array = np.tril(ionization_energies.to_numpy())  # Convert from dataframe to numpy array
-        si_energies = -np.sum(ie_array, axis=1)  # Add all ionization energies for each element to get self interation energy
-        si_tensor = torch.tensor(si_energies, dtype=torch.float32)
-        si_tensor /= 27.211_386_246  # Convert from eV to Ha
-        return si_tensor
+        ebe_energies = -np.sum(ie_array, axis=1)  # Add all ionization energies for each element to get self interation energy
+        ebe_tensor = torch.from_numpy(ebe_energies)
+        ebe_tensor /= 27.211_386_246  # Convert from eV to Ha
+        return ebe_tensor
 
     @staticmethod
     def get_atomic_symbols_list(N=NUM_ELEMENTS):

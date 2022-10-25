@@ -25,6 +25,8 @@ import logging
 import pathlib
 from typing import List
 
+import warnings
+
 import numpy as np
 from tqdm import tqdm
 
@@ -50,6 +52,8 @@ from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback
 from trip.runtime.inference import evaluate
 
 
+warnings.filterwarnings("ignore", message=r"Non-finite norm encountered", category=FutureWarning)
+
 def save_state(model: nn.Module, optimizer: Optimizer, epoch: int, path: pathlib.Path, callbacks: List[BaseCallback]):
     """ Saves model, optimizer and epoch states to path (only once per node) """
     if get_local_rank() == 0:
@@ -60,10 +64,10 @@ def save_state(model: nn.Module, optimizer: Optimizer, epoch: int, path: pathlib
 
         logging.info(f'Saved checkpoint to {str(path)}')
 
-def load_state(model: nn.Module, optimizer: Optimizer, path: pathlib.Path, callbacks: List[BaseCallback]):
+def load_state(model: nn.Module, path: pathlib.Path, callbacks: List[BaseCallback]):
     map_location = {'cuda:0': f'cuda:{get_local_rank()}'}
-    module = model.module if isinstance(model, DistributedDataParallel) else model
-    checkpoint = module.load_state(module, optimizer, path, map_location)
+    trip_model = model.module if isinstance(model, DistributedDataParallel) else model
+    checkpoint = trip_model.load_state(path, map_location)
 
     for callback in callbacks:
         callback.on_checkpoint_load(checkpoint)
@@ -121,16 +125,14 @@ def train(model: nn.Module,
     model.to(device=device)
     local_rank = get_local_rank()
     world_size = dist.get_world_size() if dist.is_initialized() else 1
-    last_mlp_weight = f'model.mlp.{len(model.model.mlp)-1}.weight'
 
     if dist.is_initialized():
         model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
         model._set_static_graph()
-        last_mlp_weight = f'module.{last_mlp_weight}'
 
     model.train()
     grad_scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
-    epoch_start = load_state(model, optimizer, args.load_ckpt_path, callbacks) if args.load_ckpt_path else 0
+    epoch_start = load_state(model, args.load_ckpt_path, callbacks) if args.load_ckpt_path else 0
 
     for callback in callbacks:
         callback.on_fit_start(optimizer, args)
@@ -150,8 +152,8 @@ def train(model: nn.Module,
             forces_loss = (forces_loss / world_size).item()
 
         factor = energy_std * 627.5
-        energy_error = np.sqrt(energy_loss) * factor
-        forces_error = np.sqrt(forces_loss) * factor
+        energy_error = energy_loss * factor
+        forces_error = forces_loss * factor
 
         logging.info(f'Energy error: {energy_error:.3f}')
         logging.info(f'Forces error: {forces_error:.3f}')
@@ -200,11 +202,14 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    si_dict = {1:-0.3884, 6:-37.7641, 7:-54.2119, 8:-74.9005}  # Found from DFT calculations of singlet energies state
-    #si_dict = {1:-0.60068572, 6:-38.08356632, 7:-54.70753352, 8:-75.19417402} # Found from linear regression
-    datamodule = TrIPDataModule(si_dict=si_dict, **vars(args))
-    energy_std = datamodule.get_energy_std().item()
-    logging.info(f'Dataset energy std: {energy_std:.3f}')
+    #si_dict = {1:-0.3884, 6:-37.7641, 7:-54.2119, 8:-74.9005}  # Found from DFT calculations of singlet energies state
+    #si_dict = {1:-0.500607632585, 6:-37.8302333826, 7:-54.5680045287, 8:-75.0362229210}  # ANI1 dataset values
+    #si_dict = {1:-0.60068572, 6:-38.08356632, 7:-54.70753352, 8:-75.19417402}  # Found from linear regression
+    #si_dict = {1:-0.46154617, 6:-37.94925896, 7:-54.58586552, 8:-75.06885424}  # Linear regression plus bias
+    #si_dict = {1:0., 6:0., 7:0., 8:0.} # Try to make si_embedding learn energies
+    datamodule = TrIPDataModule(**vars(args))
+    energy_std = datamodule.energy_std.item()
+    logging.info(f'Dataset energy std: {energy_std:.5f}')
 
     graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP(
