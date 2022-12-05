@@ -64,9 +64,8 @@ def evaluate(model: nn.Module,
 if __name__ == '__main__':
     from se3_transformer.runtime.callbacks import PerformanceCallback
     from se3_transformer.runtime.utils import init_distributed, seed_everything
-    from se3_transformer.model import Fiber
-    from trip.model import TrIPModel
-    from trip.data_loading import ANI1xDataModule
+    from trip.model import TrIP
+    from trip.data_loading import TrIPDataModule
     import torch.distributed as dist
     import logging
     import sys
@@ -97,20 +96,15 @@ if __name__ == '__main__':
     if args.wandb:
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
-    datamodule = ANI1xDataModule(**vars(args))
-    energy_std = datamodule.get_energy_std().item()
-    model = TrIP(
-        tensor_cores=(args.amp and major_cc >= 7) or major_cc >= 8,  # use Tensor Cores more effectively
-        **vars(args)
-    )
+    datamodule = TrIPDataModule(**vars(args))
+    energy_std = datamodule.energy_std.item()
+
+    graph_constructor = GraphConstructor(args.cutoff)
+    model = TrIP.load(path=str(args.load_ckpt_path), 
+                        map_location={'cuda:0': f'cuda:{local_rank}'})
     callbacks = [TrIPMetricCallback(logger, targets_std=energy_std, prefix='energy'),
                  TrIPMetricCallback(logger, targets_std=energy_std, prefix='forces')]
 
-    model.to(device=torch.cuda.current_device())
-    if args.load_ckpt_path is not None:
-        model.load_state(path=str(args.load_ckpt_path), 
-                        map_location={'cuda:0': f'cuda:{local_rank}'})
-                        
     if is_distributed:
         nproc_per_node = torch.cuda.device_count()
         affinity = gpu_affinity.set_affinity(local_rank, nproc_per_node)
@@ -119,6 +113,7 @@ if __name__ == '__main__':
 
     test_dataloader = datamodule.test_dataloader() if not args.benchmark else datamodule.train_dataloader()
     evaluate(model,
+             graph_constructor,
              test_dataloader,
              callbacks,
              args)
@@ -131,6 +126,7 @@ if __name__ == '__main__':
         callbacks = [PerformanceCallback(logger, args.batch_size * world_size, warmup_epochs=1, mode='inference')]
         for _ in range(6):
             evaluate(model,
+                     graph_constructor,
                      test_dataloader,
                      callbacks,
                      args)

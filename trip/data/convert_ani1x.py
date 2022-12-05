@@ -105,7 +105,7 @@ for subdir in os.listdir(test_dir):
                     species_data.append(torch.tensor([species_dict[atom] for atom in mol['species']], dtype=torch.long))
                     pos_data.append(torch.tensor(np.array(mol['coordinates']), dtype=torch.float32))
                     energy_data.append(torch.tensor(mol['energies'], dtype=torch.float32))
-                    forces_data.append(torch.tensor(np.array(mol['forces']), dtype=torch.float32))
+                    forces_data.append(-torch.tensor(np.array(mol['forces']), dtype=torch.float32))  # COMP6's forces have wrong sign
 
 
 box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]

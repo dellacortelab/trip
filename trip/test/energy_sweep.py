@@ -17,7 +17,7 @@ class SE3Module(torch.nn.Module):
         super(SE3Module, self).__init__()
         self.model = trained_model
         self.species_dict = {'H': 1, 'C': 6, 'N': 7, 'O': 8}
-        self.graph_constructor = GraphConstructor(trained_model.model.cutoff)
+        self.graph_constructor = GraphConstructor(trained_model.cutoff)
 
     def forward(self, species, positions, forces=True):
         species_tensor = torch.tensor([self.species_dict[atom] for atom in species], dtype=torch.int)
@@ -44,9 +44,9 @@ for symbol, name in zip(symbols, elements):
         pos = torch.FloatTensor([[0,0,0], [r,0,0]])
         energy = sm(species, pos, forces=False)
         e_array[i] = float(energy)
-    plt.plot(r_array, e_array, label = name)
+    plt.plot(r_array, e_array-e_array[-1], label = name)
     data = np.array([r_array, e_array])
 
 plt.legend()
-plt.ylim(-1, 1)
+plt.ylim(-1, 0.5)
 plt.savefig(f'/results/energy_sweep.png', dpi=300)

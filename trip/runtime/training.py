@@ -54,15 +54,18 @@ from trip.runtime.inference import evaluate
 
 warnings.filterwarnings("ignore", message=r"Non-finite norm encountered", category=FutureWarning)
 
-def save_state(model: nn.Module, optimizer: Optimizer, epoch: int, path: pathlib.Path, callbacks: List[BaseCallback]):
+def save_state(model: nn.Module, epoch: int, path: pathlib.Path, callbacks: List[BaseCallback]):
     """ Saves model, optimizer and epoch states to path (only once per node) """
     if get_local_rank() == 0:
         module = model.module if isinstance(model, DistributedDataParallel) else model
-        checkpoint = module.save(optimizer, epoch, path)
+        checkpoint = module.checkpoint(epoch)
+
         for callback in callbacks:
             callback.on_checkpoint_save(checkpoint)
 
+        torch.save(checkpoint, str(path))
         logging.info(f'Saved checkpoint to {str(path)}')
+
 
 def load_state(model: nn.Module, path: pathlib.Path, callbacks: List[BaseCallback]):
     map_location = {'cuda:0': f'cuda:{get_local_rank()}'}
@@ -74,6 +77,7 @@ def load_state(model: nn.Module, path: pathlib.Path, callbacks: List[BaseCallbac
 
     logging.info(f'Loaded checkpoint from {str(path)}')
     return checkpoint['epoch']
+
 
 def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
                 grad_scaler, optimizer, local_rank, callbacks, args):
@@ -110,6 +114,8 @@ def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
         forces_losses.append(forces_loss.item())
 
     return np.mean(energy_losses), np.mean(forces_losses)
+
+
 
 def train(model: nn.Module,
           optimizer: Optimizer,
@@ -152,8 +158,8 @@ def train(model: nn.Module,
             forces_loss = (forces_loss / world_size).item()
 
         factor = energy_std * 627.5
-        energy_error = energy_loss * factor
-        forces_error = forces_loss * factor
+        energy_error = np.sqrt(energy_loss) * factor
+        forces_error = np.sqrt(forces_loss) * factor
 
         logging.info(f'Energy error: {energy_error:.3f}')
         logging.info(f'Forces error: {forces_error:.3f}')
@@ -165,7 +171,7 @@ def train(model: nn.Module,
 
         if not args.benchmark and args.save_ckpt_path is not None and args.ckpt_interval > 0 \
                 and (epoch_idx + 1) % args.ckpt_interval == 0:
-            save_state(model, optimizer, epoch_idx, args.save_ckpt_path, callbacks)
+            save_state(model, epoch_idx, args.save_ckpt_path, callbacks)
 
         if not args.benchmark and (
                 (args.eval_interval > 0 and (epoch_idx + 1) % args.eval_interval == 0) or epoch_idx + 1 == args.epochs):
@@ -176,7 +182,7 @@ def train(model: nn.Module,
                 callback.on_validation_end(epoch_idx)
 
     if args.save_ckpt_path is not None and not args.benchmark:
-        save_state(model, optimizer, args.epochs, args.save_ckpt_path, callbacks)
+        save_state(model, args.epochs, args.save_ckpt_path, callbacks)
 
     for callback in callbacks:
         callback.on_fit_end()
@@ -203,10 +209,6 @@ if __name__ == '__main__':
     logger = LoggerCollection(loggers)
 
     #si_dict = {1:-0.3884, 6:-37.7641, 7:-54.2119, 8:-74.9005}  # Found from DFT calculations of singlet energies state
-    #si_dict = {1:-0.500607632585, 6:-37.8302333826, 7:-54.5680045287, 8:-75.0362229210}  # ANI1 dataset values
-    #si_dict = {1:-0.60068572, 6:-38.08356632, 7:-54.70753352, 8:-75.19417402}  # Found from linear regression
-    #si_dict = {1:-0.46154617, 6:-37.94925896, 7:-54.58586552, 8:-75.06885424}  # Linear regression plus bias
-    #si_dict = {1:0., 6:0., 7:0., 8:0.} # Try to make si_embedding learn energies
     datamodule = TrIPDataModule(**vars(args))
     energy_std = datamodule.energy_std.item()
     logging.info(f'Dataset energy std: {energy_std:.5f}')
