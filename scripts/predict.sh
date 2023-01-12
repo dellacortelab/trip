@@ -12,5 +12,5 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=gpu --max_restarts 0
   --cutoff 4.6 \
   --use_layer_norm \
   --norm \
-  --load_ckpt_path model_ani1x.pth \
+  --load_ckpt_path /results/model_ani1x.pth \
   --num_workers 4 \
