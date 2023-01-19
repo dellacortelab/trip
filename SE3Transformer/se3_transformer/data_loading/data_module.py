@@ -58,7 +58,7 @@ class DataModule(ABC):
         return _get_dataloader(self.ds_train, shuffle=True, **self.dataloader_kwargs)
 
     def val_dataloader(self) -> DataLoader:
-        return _get_dataloader(self.ds_val, shuffle=False, **self.dataloader_kwargs)  # TrIP: Shuffle was True
+        return _get_dataloader(self.ds_val, shuffle=True, **self.dataloader_kwargs)  # TrIP: Set to True
 
     def test_dataloader(self) -> DataLoader:
         return _get_dataloader(self.ds_test, shuffle=True, **self.dataloader_kwargs)  # TrIP: Molecule sizes vary significantly

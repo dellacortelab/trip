@@ -48,7 +48,7 @@ from se3_transformer.runtime.utils import to_cuda, get_local_rank, init_distribu
 from trip.data_loading import GraphConstructor, TrIPDataModule
 from trip.model import TrIP
 from trip.runtime.arguments import PARSER
-from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback
+from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback, TrIPWDSchedulerCallback
 from trip.runtime.inference import evaluate
 
 
@@ -79,10 +79,12 @@ def load_state(model: nn.Module, path: pathlib.Path, callbacks: List[BaseCallbac
     return checkpoint['epoch']
 
 
-def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
-                grad_scaler, optimizer, local_rank, callbacks, args):
+def train_epoch(model, graph_constructor, train_dataloader, error_fn, loss_fn,
+                epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args):
     energy_losses = []
     forces_losses = []
+    energy_errors = []
+    forces_errors = []
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
         species, pos_list, box_size_list, target = to_cuda(batch)
@@ -95,8 +97,11 @@ def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
         with torch.cuda.amp.autocast(enabled=args.amp):
             pred = model(graph, create_graph=True, standardized=True)
             energy_loss, forces_loss = loss_fn(pred, target)
+            energy_error, forces_error = error_fn(graph, pred, target)
             energy_loss /= args.accumulate_grad_batches
             forces_loss /= args.accumulate_grad_batches
+            energy_error /= args.accumulate_grad_batches
+            forces_error /= args.accumulate_grad_batches
             loss = energy_loss + args.force_weight*forces_loss
         grad_scaler.scale(loss).backward()
 
@@ -112,14 +117,16 @@ def train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
 
         energy_losses.append(energy_loss.item())
         forces_losses.append(forces_loss.item())
+        energy_errors.append(energy_error.detach().cpu().numpy())
+        forces_errors.append(forces_error.detach().cpu().numpy())
 
-    return np.mean(energy_losses), np.mean(forces_losses)
-
+    return np.mean(energy_losses), np.mean(forces_losses), np.mean(np.concatenate(energy_errors)), np.mean(np.concatenate(forces_errors))
 
 
 def train(model: nn.Module,
           optimizer: Optimizer,
           graph_constructor: GraphConstructor,
+          error_fn: _Loss,
           loss_fn: _Loss,
           train_dataloader: DataLoader,
           val_dataloader: DataLoader,
@@ -147,22 +154,34 @@ def train(model: nn.Module,
         if isinstance(train_dataloader.sampler, DistributedSampler):
             train_dataloader.sampler.set_epoch(epoch_idx)
 
-        energy_loss, forces_loss = train_epoch(model, graph_constructor, train_dataloader, loss_fn, epoch_idx,
-                                               grad_scaler, optimizer, local_rank, callbacks, args)
+        energy_loss, forces_loss, energy_error, forces_error = train_epoch(
+                model, graph_constructor, train_dataloader, error_fn, loss_fn,
+                epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args)
+
         if dist.is_initialized():
             energy_loss = torch.tensor(energy_loss, dtype=torch.float, device=device)
             forces_loss = torch.tensor(forces_loss, dtype=torch.float, device=device)
+            energy_error = torch.tensor(energy_error, dtype=torch.float, device=device)
+            forces_error = torch.tensor(forces_error, dtype=torch.float, device=device)
             torch.distributed.all_reduce(energy_loss)
             torch.distributed.all_reduce(forces_loss)
+            torch.distributed.all_reduce(energy_error)
+            torch.distributed.all_reduce(forces_error)
             energy_loss = (energy_loss / world_size).item()
             forces_loss = (forces_loss / world_size).item()
+            energy_error = (energy_error / world_size).item()
+            forces_error = (forces_error / world_size).item()
 
         factor = energy_std * 627.5
-        energy_error = np.sqrt(energy_loss) * factor
-        forces_error = np.sqrt(forces_loss) * factor
+        energy_error = np.sqrt(energy_error) * factor
+        forces_error = np.sqrt(forces_error) * factor
 
+        logging.info(f'Energy loss: {energy_loss:.3f}')
+        logging.info(f'Forces loss: {forces_loss:.3f}')
         logging.info(f'Energy error: {energy_error:.3f}')
         logging.info(f'Forces error: {forces_error:.3f}')
+        logger.log_metrics({'energy loss': energy_loss}, epoch_idx)
+        logger.log_metrics({'forces loss': forces_loss}, epoch_idx)
         logger.log_metrics({'energy error': energy_error}, epoch_idx)
         logger.log_metrics({'forces error': forces_error}, epoch_idx)
 
@@ -208,7 +227,6 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    #si_dict = {1:-0.3884, 6:-37.7641, 7:-54.2119, 8:-74.9005}  # Found from DFT calculations of singlet energies state
     datamodule = TrIPDataModule(**vars(args))
     energy_std = datamodule.energy_std.item()
     logging.info(f'Dataset energy std: {energy_std:.5f}')
@@ -220,6 +238,7 @@ if __name__ == '__main__':
         **vars(args)
     )
     optimizer = TrIP.make_optimizer(model, **vars(args))
+    error_fn = TrIP.error_fn
     loss_fn = TrIP.loss_fn
 
     if args.benchmark:
@@ -229,7 +248,8 @@ if __name__ == '__main__':
     else:
         callbacks = [TrIPMetricCallback(logger, targets_std=energy_std, prefix='energy validation'),
                      TrIPMetricCallback(logger, targets_std=energy_std, prefix='forces validation'),
-                     TrIPLRSchedulerCallback(logger)]
+                     TrIPLRSchedulerCallback(logger),
+                     TrIPWDSchedulerCallback(logger)]
 
     if is_distributed:
         gpu_affinity.set_affinity(gpu_id=get_local_rank(), nproc_per_node=torch.cuda.device_count())
@@ -240,6 +260,7 @@ if __name__ == '__main__':
     train(model,
           optimizer,
           graph_constructor,
+          error_fn,
           loss_fn,
           datamodule.train_dataloader(),
           datamodule.val_dataloader(),

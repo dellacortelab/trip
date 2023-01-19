@@ -229,7 +229,7 @@ class TrIPModel(TrIPTransformer):
         # Return relative energies if requested
         atom_energies = atom_energies * self.energy_std
         if hasattr(self, 'si_tensor'): 
-        # Add back si_energies if they exist
+        # Add back si_energies if they exist. Used for testing but not training
             species = graph.ndata['species']
             si_energies = self.si_tensor[(species-1).tolist()]  # -1 so H starts at 0
             atom_energies = atom_energies + si_energies
@@ -363,6 +363,14 @@ class TrIP(TrIPModel):
         energy_loss = calc_loss((pred[0] - target[0])**2)
         forces_loss = calc_loss(torch.sum((pred[1] - target[1])**2, dim=1))  # Argument is squared norm
         return energy_loss, forces_loss
+
+    @staticmethod
+    def error_fn(graph, pred, target):
+        lens = torch.tensor([g.num_nodes() for g in dgl.unbatch(graph)])
+        num_species = torch.sum(lens == 1)
+        energy_error = (pred[0][:-num_species] - target[0][:-num_species])**2
+        forces_error = torch.sum((pred[1][:-num_species] - target[1][:-num_species])**2, dim=1)
+        return energy_error, forces_error
 
     @staticmethod
     def add_argparse_args(parent_parser):

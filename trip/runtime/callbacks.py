@@ -25,6 +25,11 @@ import logging
 
 import torch
 
+from abc import abstractmethod
+from typing import Optional
+
+
+from se3_transformer.runtime.loggers import Logger
 from se3_transformer.runtime.callbacks import BaseCallback
 from se3_transformer.runtime.metrics import MeanAbsoluteError
 from trip.runtime.metrics import RootMeanSquaredError
@@ -78,4 +83,59 @@ class TrIPLRSchedulerCallback(LRSchedulerCallback):
 
     def get_scheduler(self, optimizer, args):
         return torch.optim.lr_scheduler.ExponentialLR(optimizer, args.gamma)
+        
+
+class WDSchedulerCallback(BaseCallback):
+    def __init__(self, logger: Optional[Logger] = None):
+        self.logger = logger
+        self.scheduler = None
+
+        self.logger.log_metadata('weight decay', {'unit': None})
+
+    @abstractmethod
+    def get_scheduler(self, optimizer, args):
+        pass
+
+    def on_fit_start(self, optimizer, args):
+        self.scheduler = self.get_scheduler(optimizer, args)
+
+    def on_checkpoint_load(self, checkpoint):
+        self.scheduler.load_state_dict(checkpoint['wd_scheduler_state_dict'])
+
+    def on_checkpoint_save(self, checkpoint):
+        checkpoint['wd_scheduler_state_dict'] = self.scheduler.state_dict()
+
+    def on_epoch_end(self):
+        if self.logger is not None:
+            self.logger.log_metrics({'weight decay': self.scheduler.get_last_wd()}, step=self.scheduler.last_epoch)
+        self.scheduler.step()
+
+
+class TrIPWDSchedulerCallback(WDSchedulerCallback):
+    def __init__(self, logger):
+        super().__init__(logger)
+
+    def get_scheduler(self, optimizer, args):
+        return HeavisideWDScheduler(optimizer, args.epochs//2)    
+
+class HeavisideWDScheduler(object):
+    def __init__(self, optimizer, critical_epoch):
+        self.optimizer = optimizer
+        self.critical_epoch = critical_epoch
+        self.last_epoch = 0
+
+    def step(self):
+        self.last_epoch += 1
+        if self.last_epoch == self.critical_epoch:
+            for param_group in self.optimizer.param_groups:
+                param_group['weight_decay'] = 0.0
+
+    def get_last_wd(self):
+        return max(param_group['weight_decay'] for param_group in self.optimizer.param_groups)
+
+    def state_dict(self):
+        return {key: value for key, value in self.__dict__.items() if key != 'optimizer'}
+
+    def load_state_dict(self, state_dict):
+        self.__dict__.update(state_dict)
         
