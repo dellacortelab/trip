@@ -79,7 +79,7 @@ def load_state(model: nn.Module, path: pathlib.Path, callbacks: List[BaseCallbac
     return checkpoint['epoch']
 
 
-def train_epoch(model, graph_constructor, train_dataloader, error_fn, loss_fn,
+def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error_fn, loss_fn,
                 epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args):
     energy_losses = []
     forces_losses = []
@@ -87,8 +87,10 @@ def train_epoch(model, graph_constructor, train_dataloader, error_fn, loss_fn,
     forces_errors = []
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
-        species, pos_list, box_size_list, target = to_cuda(batch)
-        graph = graph_constructor.create_graphs(pos_list, box_size_list)
+        batch, num_atoms = add_atom_data(*batch)
+        species, pos_list, energy, forces, box_size = to_cuda(batch)
+        target = energy, forces
+        graph = graph_constructor.create_graphs(pos_list, box_size)
         graph.ndata['species'] = species
 
         for callback in callbacks:
@@ -97,11 +99,9 @@ def train_epoch(model, graph_constructor, train_dataloader, error_fn, loss_fn,
         with torch.cuda.amp.autocast(enabled=args.amp):
             pred = model(graph, create_graph=True, standardized=True)
             energy_loss, forces_loss = loss_fn(pred, target)
-            energy_error, forces_error = error_fn(graph, pred, target)
+            energy_error, forces_error = error_fn(pred, target, num_atoms)
             energy_loss /= args.accumulate_grad_batches
             forces_loss /= args.accumulate_grad_batches
-            energy_error /= args.accumulate_grad_batches
-            forces_error /= args.accumulate_grad_batches
             loss = energy_loss + args.force_weight*forces_loss
         grad_scaler.scale(loss).backward()
 
@@ -120,13 +120,48 @@ def train_epoch(model, graph_constructor, train_dataloader, error_fn, loss_fn,
         energy_errors.append(energy_error.detach().cpu().numpy())
         forces_errors.append(forces_error.detach().cpu().numpy())
 
-    return np.mean(energy_losses), np.mean(forces_losses), np.mean(np.concatenate(energy_errors)), np.mean(np.concatenate(forces_errors))
+    energy_loss = np.mean(energy_losses)
+    forces_loss = np.mean(forces_losses)
+    energy_error = np.mean(np.concatenate(energy_errors))
+    forces_error = np.mean(np.concatenate(forces_errors))
+    return energy_loss, forces_loss, energy_error, forces_error
+
+
+def log_epoch(energy_loss, forces_loss, energy_error, forces_error, logger, device,
+              energy_std, world_size, epoch_idx):
+    if dist.is_initialized():
+        energy_loss = torch.tensor(energy_loss, dtype=torch.float, device=device)
+        forces_loss = torch.tensor(forces_loss, dtype=torch.float, device=device)
+        energy_error = torch.tensor(energy_error, dtype=torch.float, device=device)
+        forces_error = torch.tensor(forces_error, dtype=torch.float, device=device)
+        torch.distributed.all_reduce(energy_loss)
+        torch.distributed.all_reduce(forces_loss)
+        torch.distributed.all_reduce(energy_error)
+        torch.distributed.all_reduce(forces_error)
+        energy_loss = (energy_loss / world_size).item()
+        forces_loss = (forces_loss / world_size).item()
+        energy_error = (energy_error / world_size).item()
+        forces_error = (forces_error / world_size).item()
+
+    factor = energy_std * 627.5
+    energy_error = np.sqrt(energy_error) * factor
+    forces_error = np.sqrt(forces_error) * factor
+
+    logging.info(f'Energy loss: {energy_loss:.5f}')
+    logging.info(f'Forces loss: {forces_loss:.5f}')
+    logging.info(f'Energy error: {energy_error:.3f}')
+    logging.info(f'Forces error: {forces_error:.3f}')
+    logger.log_metrics({'energy loss': energy_loss}, epoch_idx)
+    logger.log_metrics({'forces loss': forces_loss}, epoch_idx)
+    logger.log_metrics({'energy error': energy_error}, epoch_idx)
+    logger.log_metrics({'forces error': forces_error}, epoch_idx)
 
 
 def train(model: nn.Module,
           optimizer: Optimizer,
           graph_constructor: GraphConstructor,
-          error_fn: _Loss,
+          add_atom_data: function,
+          error_fn: function,
           loss_fn: _Loss,
           train_dataloader: DataLoader,
           val_dataloader: DataLoader,
@@ -154,36 +189,11 @@ def train(model: nn.Module,
         if isinstance(train_dataloader.sampler, DistributedSampler):
             train_dataloader.sampler.set_epoch(epoch_idx)
 
-        energy_loss, forces_loss, energy_error, forces_error = train_epoch(
-                model, graph_constructor, train_dataloader, error_fn, loss_fn,
-                epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args)
+        train_output = train_epoch(
+                model, graph_constructor, add_atom_data, train_dataloader, error_fn,
+                loss_fn, epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args)
 
-        if dist.is_initialized():
-            energy_loss = torch.tensor(energy_loss, dtype=torch.float, device=device)
-            forces_loss = torch.tensor(forces_loss, dtype=torch.float, device=device)
-            energy_error = torch.tensor(energy_error, dtype=torch.float, device=device)
-            forces_error = torch.tensor(forces_error, dtype=torch.float, device=device)
-            torch.distributed.all_reduce(energy_loss)
-            torch.distributed.all_reduce(forces_loss)
-            torch.distributed.all_reduce(energy_error)
-            torch.distributed.all_reduce(forces_error)
-            energy_loss = (energy_loss / world_size).item()
-            forces_loss = (forces_loss / world_size).item()
-            energy_error = (energy_error / world_size).item()
-            forces_error = (forces_error / world_size).item()
-
-        factor = energy_std * 627.5
-        energy_error = np.sqrt(energy_error) * factor
-        forces_error = np.sqrt(forces_error) * factor
-
-        logging.info(f'Energy loss: {energy_loss:.3f}')
-        logging.info(f'Forces loss: {forces_loss:.3f}')
-        logging.info(f'Energy error: {energy_error:.3f}')
-        logging.info(f'Forces error: {forces_error:.3f}')
-        logger.log_metrics({'energy loss': energy_loss}, epoch_idx)
-        logger.log_metrics({'forces loss': forces_loss}, epoch_idx)
-        logger.log_metrics({'energy error': energy_error}, epoch_idx)
-        logger.log_metrics({'forces error': forces_error}, epoch_idx)
+        log_epoch(*train_output, logger, device, energy_std, world_size, epoch_idx)
 
         for callback in callbacks:
             callback.on_epoch_end()
@@ -205,6 +215,8 @@ def train(model: nn.Module,
 
     for callback in callbacks:
         callback.on_fit_end()
+
+
 
 
 if __name__ == '__main__':
@@ -231,13 +243,14 @@ if __name__ == '__main__':
     energy_std = datamodule.energy_std.item()
     logging.info(f'Dataset energy std: {energy_std:.5f}')
 
-    graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP(
         energy_std=energy_std,
         tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )
     optimizer = TrIP.make_optimizer(model, **vars(args))
+    graph_constructor = GraphConstructor(args.cutoff)
+    add_atom_data = datamodule.add_atom_data
     error_fn = TrIP.error_fn
     loss_fn = TrIP.loss_fn
 
@@ -260,6 +273,7 @@ if __name__ == '__main__':
     train(model,
           optimizer,
           graph_constructor,
+          add_atom_data,
           error_fn,
           loss_fn,
           datamodule.train_dataloader(),

@@ -40,16 +40,6 @@ from trip.runtime.callbacks import TrIPMetricCallback
 from trip.model import TrIP
 
 
-def rm_atoms(species_list, pos_list, box_size_list, target):
-    lens = torch.tensor([len(p) for p in pos_list])
-    num_species = torch.sum(lens==1)
-    species_list = species_list[:-num_species]
-    pos_list = pos_list[:-num_species]
-    box_size_list = box_size_list[:-num_species]
-    energy_list, forces_list = target
-    target = energy_list[:-num_species], forces_list[:-num_species]
-    return species_list, pos_list, box_size_list, target
-
 def evaluate(model: nn.Module,
              graph_constructor: GraphConstructor,
              dataloader: DataLoader,
@@ -57,10 +47,10 @@ def evaluate(model: nn.Module,
              args):
     for _, batch in tqdm(enumerate(dataloader), total=len(dataloader), unit='batch', desc=f'Evaluation',
                          leave=False, disable=(args.silent or get_local_rank() != 0)):
-        batch = to_cuda(batch)
-        species_list, pos_list, box_size_list, target = rm_atoms(*batch)
-        graph = graph_constructor.create_graphs(pos_list, box_size_list)
-        graph.ndata['species'] = species_list
+        species, pos_list, energy, forces, box_size = to_cuda(batch)
+        target = energy, forces
+        graph = graph_constructor.create_graphs(pos_list, box_size)
+        graph.ndata['species'] = species
 
         for callback in callbacks:
             callback.on_batch_start()
@@ -87,7 +77,7 @@ if __name__ == '__main__':
 
     logging.getLogger().setLevel(logging.CRITICAL if local_rank != 0 or args.silent else logging.INFO)
 
-    logging.info('============ TrIP ============')
+    logging.info('============ TrIP =============')
     logging.info('|  Inference on the test set  |')
     logging.info('===============================')
 

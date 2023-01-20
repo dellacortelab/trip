@@ -79,7 +79,7 @@ class TrIPTransformer(nn.Module):
         self.channels_div = channels_div
         self.max_degree = max(*fiber_in.degrees, *fiber_hidden.degrees, *fiber_out.degrees)
         self.tensor_cores = tensor_cores
-        self.low_memory = low_memory  # TODO: Check whether low_memory works now or should remove
+        self.low_memory = low_memory  # TODO: Check whether low_memory is possible
 
         if low_memory:
             self.fuse_level = ConvSE3FuseLevel.NONE
@@ -239,7 +239,7 @@ class TrIPModel(TrIPTransformer):
     @staticmethod
     def scale_fn(dist, cutoff):
         scale = torch.zeros_like(dist)
-        scale[dist < cutoff] = TrIPModel.bump_fn(dist[dist<cutoff] / cutoff, k=3)
+        scale[dist < cutoff] = TrIPModel.bump_fn(dist[dist<cutoff] / cutoff, k=1)
         return scale
 
     @staticmethod
@@ -365,11 +365,9 @@ class TrIP(TrIPModel):
         return energy_loss, forces_loss
 
     @staticmethod
-    def error_fn(graph, pred, target):
-        lens = torch.tensor([g.num_nodes() for g in dgl.unbatch(graph)])
-        num_species = torch.sum(lens == 1)
-        energy_error = (pred[0][:-num_species] - target[0][:-num_species])**2
-        forces_error = torch.sum((pred[1][:-num_species] - target[1][:-num_species])**2, dim=1)
+    def error_fn(pred, target, num_atoms=0):
+        energy_error = (pred[0][:-num_atoms] - target[0][:-num_atoms])**2
+        forces_error = torch.sum((pred[1][:-num_atoms] - target[1][:-num_atoms])**2, dim=1)
         return energy_error, forces_error
 
     @staticmethod

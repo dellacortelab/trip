@@ -59,17 +59,6 @@ class TrIPDataModule(DataModule):
         self.ds_val = self._make_ds(container, 'val')
         self.ds_test = self._make_ds(container, 'test')
 
-        # Make atom_samples data
-        atom_samples = []
-        for s in self._species_list:
-            sample = tuple([torch.tensor([s], dtype=torch.long), # Species
-                            torch.zeros((1,3), dtype=torch.float), # Position
-                            self._adjusted_ae_tensor[s-1], # Energy
-                            torch.zeros((1,3), dtype=torch.float), # Forces
-                            torch.full([3], float('inf'), dtype=torch.float)]) # Box size
-            atom_samples.append(sample)
-        self.atom_samples = atom_samples
-
     def _calc_si(self, container):
         species_data, _, energy_data, _, _ = container.get_data('train')
         species_list = self._species_list
@@ -111,6 +100,15 @@ class TrIPDataModule(DataModule):
                          *container.get_data(name))
         return ds
 
+    def add_atom_data(self, species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor):
+        num_atoms = len(self._species_list)
+        species_tensor = torch.cat((species_tensor, self._species_list))
+        pos_list.extend(num_atoms*[torch.zeros((1,3), dtype=torch.float)])
+        energy_tensor = torch.cat((energy_tensor, self._adjusted_ae_tensor[self._species_list-1]))
+        forces_tensor = torch.cat((forces_tensor, torch.zeros((num_atoms,3), dtype=torch.float)))
+        box_size_tensor = torch.cat((box_size_tensor, torch.full((num_atoms,3), float('inf'), dtype=torch.float)), dim=1)
+        return (species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor), num_atoms
+
     @property
     def species_list(self):
         return self._species_list.copy()
@@ -123,12 +121,14 @@ class TrIPDataModule(DataModule):
     def energy_std(self):
         return self._energy_std
 
-    def _collate(self, samples):
-        samples.extend(self.atom_samples)
+    @staticmethod
+    def _collate(samples):
         species_list, pos_list, energy_list, forces_list, box_size_list = list(map(list, zip(*samples)))
-        species = torch.cat(species_list)
-        target = torch.stack(energy_list), torch.cat(forces_list)
-        return species, pos_list, box_size_list, target
+        species_tensor = torch.cat(species_list)
+        energy_tensor = torch.stack(energy_list)
+        forces_tensor = torch.cat(forces_list)
+        box_size_tensor = torch.stack(box_size_list, dim=1)
+        return species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor
 
     @staticmethod
     def _to_ds_format(species_data, pos_data, energy_data, forces_data, box_data):
@@ -152,8 +152,6 @@ class TrIPDataModule(DataModule):
         parser.add_argument('--trip_file', type=pathlib.Path, default=pathlib.Path('/results/ani1x.trip'),
                             help='Directory where the data is located or should be downloaded')
         return parent_parser
-
-
 
 
 class TrIPDataset(Dataset):
