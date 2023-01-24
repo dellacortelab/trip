@@ -101,12 +101,13 @@ class TrIPDataModule(DataModule):
         return ds
 
     def add_atom_data(self, species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor):
-        num_atoms = len(self._species_list)
-        species_tensor = torch.cat((species_tensor, self._species_list))
+        atom_species = torch.tensor(self._species_list)
+        num_atoms = len(atom_species)
+        species_tensor = torch.cat((species_tensor, atom_species))
         pos_list.extend(num_atoms*[torch.zeros((1,3), dtype=torch.float)])
-        energy_tensor = torch.cat((energy_tensor, self._adjusted_ae_tensor[self._species_list-1]))
+        energy_tensor = torch.cat((energy_tensor, self._adjusted_ae_tensor[atom_species-1]))
         forces_tensor = torch.cat((forces_tensor, torch.zeros((num_atoms,3), dtype=torch.float)))
-        box_size_tensor = torch.cat((box_size_tensor, torch.full((num_atoms,3), float('inf'), dtype=torch.float)), dim=1)
+        box_size_tensor = torch.cat((box_size_tensor, torch.full((num_atoms,3), float('inf'), dtype=torch.float)))
         return (species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor), num_atoms
 
     @property
@@ -127,7 +128,7 @@ class TrIPDataModule(DataModule):
         species_tensor = torch.cat(species_list)
         energy_tensor = torch.stack(energy_list)
         forces_tensor = torch.cat(forces_list)
-        box_size_tensor = torch.stack(box_size_list, dim=1)
+        box_size_tensor = torch.stack(box_size_list, dim=0)
         return species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor
 
     @staticmethod

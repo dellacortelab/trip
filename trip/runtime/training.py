@@ -23,7 +23,7 @@
 
 import logging
 import pathlib
-from typing import List
+from typing import List, Callable
 
 import warnings
 
@@ -81,10 +81,10 @@ def load_state(model: nn.Module, path: pathlib.Path, callbacks: List[BaseCallbac
 
 def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error_fn, loss_fn,
                 epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args):
-    energy_losses = []
-    forces_losses = []
-    energy_errors = []
-    forces_errors = []
+    energy_loss_acc = torch.zeros((1,), device='cuda')
+    forces_loss_acc = torch.zeros((1,), device='cuda')
+    energy_error_acc = torch.zeros((1,), device='cuda')
+    forces_error_acc = torch.zeros((1,), device='cuda')
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
         batch, num_atoms = add_atom_data(*batch)
@@ -103,6 +103,11 @@ def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error
             energy_loss /= args.accumulate_grad_batches
             forces_loss /= args.accumulate_grad_batches
             loss = energy_loss + args.force_weight*forces_loss
+            
+        energy_loss_acc += energy_loss.detach()
+        forces_loss_acc += forces_loss.detach()
+        energy_error_acc += energy_error.detach()
+        forces_error_acc += forces_error.detach()
         grad_scaler.scale(loss).backward()
 
         # gradient accumulation
@@ -115,33 +120,30 @@ def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error
             grad_scaler.update()
             model.zero_grad(set_to_none=True)
 
-        energy_losses.append(energy_loss.item())
-        forces_losses.append(forces_loss.item())
-        energy_errors.append(energy_error.detach().cpu().numpy())
-        forces_errors.append(forces_error.detach().cpu().numpy())
+    energy_loss = energy_loss_acc / (i + 1)
+    forces_loss = forces_loss_acc / (i + 1)
+    energy_error = energy_error_acc / (i + 1)
+    forces_error = forces_error_acc / (i + 1)
 
-    energy_loss = np.mean(energy_losses)
-    forces_loss = np.mean(forces_losses)
-    energy_error = np.mean(np.concatenate(energy_errors))
-    forces_error = np.mean(np.concatenate(forces_errors))
     return energy_loss, forces_loss, energy_error, forces_error
 
 
 def log_epoch(energy_loss, forces_loss, energy_error, forces_error, logger, device,
               energy_std, world_size, epoch_idx):
     if dist.is_initialized():
-        energy_loss = torch.tensor(energy_loss, dtype=torch.float, device=device)
-        forces_loss = torch.tensor(forces_loss, dtype=torch.float, device=device)
-        energy_error = torch.tensor(energy_error, dtype=torch.float, device=device)
-        forces_error = torch.tensor(forces_error, dtype=torch.float, device=device)
         torch.distributed.all_reduce(energy_loss)
         torch.distributed.all_reduce(forces_loss)
         torch.distributed.all_reduce(energy_error)
         torch.distributed.all_reduce(forces_error)
-        energy_loss = (energy_loss / world_size).item()
-        forces_loss = (forces_loss / world_size).item()
-        energy_error = (energy_error / world_size).item()
-        forces_error = (forces_error / world_size).item()
+        energy_loss /= world_size
+        forces_loss /= world_size
+        energy_error /= world_size
+        forces_error /= world_size
+
+    energy_loss = energy_loss.item()
+    forces_loss = forces_loss.item()
+    energy_error = energy_error.item()
+    forces_error = forces_error.item()
 
     factor = energy_std * 627.5
     energy_error = np.sqrt(energy_error) * factor
@@ -160,8 +162,8 @@ def log_epoch(energy_loss, forces_loss, energy_error, forces_error, logger, devi
 def train(model: nn.Module,
           optimizer: Optimizer,
           graph_constructor: GraphConstructor,
-          add_atom_data: function,
-          error_fn: function,
+          add_atom_data: Callable,
+          error_fn: Callable,
           loss_fn: _Loss,
           train_dataloader: DataLoader,
           val_dataloader: DataLoader,
@@ -261,8 +263,7 @@ if __name__ == '__main__':
     else:
         callbacks = [TrIPMetricCallback(logger, targets_std=energy_std, prefix='energy validation'),
                      TrIPMetricCallback(logger, targets_std=energy_std, prefix='forces validation'),
-                     TrIPLRSchedulerCallback(logger),
-                     TrIPWDSchedulerCallback(logger)]
+                     TrIPLRSchedulerCallback(logger)]
 
     if is_distributed:
         gpu_affinity.set_affinity(gpu_id=get_local_rank(), nproc_per_node=torch.cuda.device_count())
