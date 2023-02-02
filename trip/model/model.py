@@ -239,12 +239,12 @@ class TrIPModel(TrIPTransformer):
     @staticmethod
     def scale_fn(dist, cutoff):
         scale = torch.zeros_like(dist)
-        scale[dist < cutoff] = TrIPModel.bump_fn(dist[dist<cutoff] / cutoff, k=1)
+        scale[dist < cutoff] = TrIPModel.bump_fn(dist[dist<cutoff] / cutoff, k=3)
         return scale
 
     @staticmethod
     def bump_fn(x, k=1):
-        return torch.exp(k - k / (1 - x**2))
+        return torch.exp(1 - k / (1 - x**2))
 
     def screened_coulomb(self, graph, dist, scale):
         Z = graph.ndata['species']
@@ -329,8 +329,7 @@ class TrIP(TrIPModel):
 
     @staticmethod
     def make_optimizer(model, optimizer_type, learning_rate, momentum, weight_decay, **kwargs):
-        parameters = TrIP.add_weight_decay(model, weight_decay, skip_list=['model.embedding.weight',
-                                                                           'model.mlp.2.weight'])
+        parameters = TrIP.add_weight_decay(model, weight_decay, skip_list=['embedding.weight', 'mlp.4.weight'])
         if optimizer_type == 'adam':
             return FusedAdam(parameters, lr=learning_rate, betas=(momentum, 0.999),
                              weight_decay=weight_decay)
@@ -340,7 +339,7 @@ class TrIP(TrIPModel):
         else:
             return torch.optim.SGD(parameters, lr=learning_rate, momentum=momentum,
                                    weight_decay=weight_decay)
-
+        
     @staticmethod
     # https://discuss.pytorch.org/t/weight-decay-in-the-optimizers-is-a-bad-idea-especially-with-batchnorm/16994/3
     def add_weight_decay(model, weight_decay, skip_list=[]):
@@ -349,7 +348,7 @@ class TrIP(TrIPModel):
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            if len(param.shape) == 1 or name in skip_list:
+            if len(param.shape) == 1 or name in skip_list or 'norm' in name:
                 no_decay.append(param)
             else:
                 decay.append(param)
@@ -367,7 +366,7 @@ class TrIP(TrIPModel):
     @staticmethod
     def error_fn(pred, target, num_atoms=0):
         energy_error = torch.mean((pred[0][:-num_atoms] - target[0][:-num_atoms])**2)
-        forces_error = torch.mean((pred[1][:-num_atoms] - target[1][:-num_atoms])**2)
+        forces_error = torch.mean(torch.mean((pred[1][:-num_atoms] - target[1][:-num_atoms])**2, dim=1))
         return energy_error, forces_error
 
     @staticmethod

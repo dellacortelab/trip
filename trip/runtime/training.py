@@ -33,6 +33,7 @@ from tqdm import tqdm
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from torch.distributed import ReduceOp
 from torch.nn.modules.loss import _Loss
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim import Optimizer
@@ -48,7 +49,7 @@ from se3_transformer.runtime.utils import to_cuda, get_local_rank, init_distribu
 from trip.data_loading import GraphConstructor, TrIPDataModule
 from trip.model import TrIP
 from trip.runtime.arguments import PARSER
-from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback, TrIPWDSchedulerCallback
+from trip.runtime.callbacks import TrIPMetricCallback, TrIPLRSchedulerCallback
 from trip.runtime.inference import evaluate
 
 
@@ -81,10 +82,13 @@ def load_state(model: nn.Module, path: pathlib.Path, callbacks: List[BaseCallbac
 
 def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error_fn, loss_fn,
                 epoch_idx, grad_scaler, optimizer, local_rank, callbacks, args):
+    # TODO: Find a cleaner way to deal with accumulation variables
     energy_loss_acc = torch.zeros((1,), device='cuda')
     forces_loss_acc = torch.zeros((1,), device='cuda')
     energy_error_acc = torch.zeros((1,), device='cuda')
     forces_error_acc = torch.zeros((1,), device='cuda')
+    num_atoms_acc = torch.zeros((1,), device='cuda')
+    num_confs_acc = torch.zeros((1,), device='cuda')
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
         batch, num_atoms = add_atom_data(*batch)
@@ -108,6 +112,8 @@ def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error
         forces_loss_acc += forces_loss.detach()
         energy_error_acc += energy_error.detach()
         forces_error_acc += forces_error.detach()
+        num_atoms_acc += len(forces) - num_atoms
+        num_confs_acc += len(energy) - num_atoms
         grad_scaler.scale(loss).backward()
 
         # gradient accumulation
@@ -122,8 +128,8 @@ def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error
 
     energy_loss = energy_loss_acc / (i + 1)
     forces_loss = forces_loss_acc / (i + 1)
-    energy_error = energy_error_acc / (i + 1)
-    forces_error = forces_error_acc / (i + 1)
+    energy_error = energy_error_acc / num_confs_acc
+    forces_error = forces_error_acc / num_atoms_acc
 
     return energy_loss, forces_loss, energy_error, forces_error
 
@@ -241,7 +247,8 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    datamodule = TrIPDataModule(**vars(args))
+    si_dict = {1: -0.3884, 6: -37.7641, 7: -54.2119, 8: -74.9005}
+    datamodule = TrIPDataModule(si_dict=si_dict, **vars(args))
     energy_std = datamodule.energy_std.item()
     logging.info(f'Dataset energy std: {energy_std:.5f}')
 

@@ -65,11 +65,11 @@ class TrIPNorm(nn.Module):
             # Fuse all the layer normalizations into a group normalization
             self.group_norm = TrIPGroupNorm(fiber.channels[0], len(fiber.channels),)
         else:
-            # Use multiple layer normalizations
+        # Use multiple layer normalizations
             self.layer_norms = nn.ModuleDict({
                 str(degree): TrIPLayerNorm(channels)
                 for degree, channels in fiber
-            })
+        })
 
     def forward(self, features: Dict[str, Tensor], *args, **kwargs) -> Dict[str, Tensor]:
         with nvtx_range('TrIPNorm'):
@@ -108,7 +108,7 @@ class TrIPLayerNorm(nn.Module):
             init.ones_(self.weight)
 
     def forward(self, input: Tensor) -> Tensor:
-        out = input / torch.sqrt(torch.mean(input**2, dim=-1, keepdim=True))
+        out = input / torch.mean(input, dim=-1, keepdim=True)
         return out * self.weight if self.elementwise_affine else out
             
     def extra_repr(self) -> str:
@@ -116,6 +116,7 @@ class TrIPLayerNorm(nn.Module):
             'elementwise_affine={elementwise_affine}'.format(**self.__dict__)
 
 
+# TODO: Fix this code so it trains correctly
 class TrIPGroupNorm(nn.Module):
     def __init__(self, num_channels, num_groups, elementwise_affine=True, device=None, dtype=None):
         factory_kwargs = {'device': device, 'dtype': dtype}
@@ -136,7 +137,7 @@ class TrIPGroupNorm(nn.Module):
             init.ones_(self.weight)
 
     def forward(self, input: Tensor) -> Tensor:
-        out = input / torch.sqrt(torch.mean(input**2, dim=-2, keepdim=True))
+        out = input / torch.mean(input, dim=-2, keepdim=True)
         return out * self.weight if self.elementwise_affine else out
 
     def extra_repr(self) -> str:
