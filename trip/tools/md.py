@@ -40,14 +40,14 @@ class TrIPModule(torch.nn.Module):
         self.species_tensor = torch.tensor([symbol_dict[atom] for atom in species], dtype=torch.int, device='cuda')
 	
     def forward(self, positions, box_size, forces=True):
-        graph = self.graph_constructor.create_graphs(positions, box_size=box_size) # Cutoff for 5-12 model is 3.0 A
+        graph = self.graph_constructor.create_graphs(positions, box_size) # Cutoff for 5-12 model is 3.0 A
         graph.ndata['species'] = self.species_tensor
 
         if forces:
-            energy, forces = self.model(graph, box_size=box_size, forces=forces, create_graph=False)
+            energy, forces = self.model(graph, forces=forces, create_graph=False)
             return energy.item(), forces
         else:
-            energy = self.model(graph, box_size=box_size, forces=forces, create_graph=False)
+            energy = self.model(graph, forces=forces, create_graph=False)
             return energy.item()
 
 
@@ -79,11 +79,10 @@ simulation_time = args.simTime
 model_file = args.modelFile
 
 pdbf = PDBFile(in_file)
-system = System()
 topo = pdbf.topology
 
+system = System()
 for atom in topo.atoms():
-    print(atom.name + ': ' + str(atom.element.atomic_number) + ' id: ' + atom.id)
     system.addParticle(atom.element.mass)
 
 trip_force = CustomExternalForce('-fx*x-fy*y-fz*z')
@@ -111,6 +110,8 @@ box_size = torch.tensor(box_size, dtype=torch.float, device='cuda')
 res = minimize(energy_function, pos.cpu().numpy().flatten(), method='CG', jac=jacobian)
 newpos = torch.tensor(res.x, dtype=torch.float, device='cuda').reshape(-1,3)
 
+pdbfile.PDBFile.writeFile(topo, newpos, open('minimized', 'w'))
+
 energy, forces = sm(newpos, box_size=box_size)
 
 
@@ -125,7 +126,7 @@ integrator = LangevinIntegrator(temperature, 1/picosecond, step_size*femtosecond
 simulation = Simulation(topo, system, integrator)
 
 
-positions = newpos.tolist()*angstrom 
+positions = newpos.tolist()*angstrom
 simulation.context.setPositions(positions)
 simulation.context.setVelocitiesToTemperature(temperature)
 
@@ -144,7 +145,6 @@ for i in range(num_steps):
     positions = state.getPositions()
 
     box_vectors = simulation.context.getState().getPeriodicBoxVectors(True)
-    box_size = torch.tensor([box_vectors[i,i]/angstrom for i in range(3)],dtype=torch.float, device='cuda')
     newpos = torch.tensor([[pos.x,pos.y,pos.z] for pos in positions], dtype=torch.float, device='cuda')*10.0 # Nanometer to Angstrom
     
     energy, forces = sm(newpos, box_size)
