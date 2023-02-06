@@ -42,5 +42,5 @@ class AtomicData:
 
     @staticmethod
     def get_atomic_symbols_list(N=NUM_ELEMENTS):
-        return [element[i].symbol for i in range(1,N+1)]
+        return [element(i).symbol for i in range(1,N+1)]
 

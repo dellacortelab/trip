@@ -33,7 +33,6 @@ from tqdm import tqdm
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from torch.distributed import ReduceOp
 from torch.nn.modules.loss import _Loss
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim import Optimizer

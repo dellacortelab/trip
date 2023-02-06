@@ -28,6 +28,8 @@ from torch import Tensor
 
 import dgl
 
+from scipy.spatial import KDTree
+
 
 class GraphConstructor:
     def __init__(self, cutoff: float):
@@ -47,7 +49,7 @@ class GraphConstructor:
             if torch.isinf(box_size).all():
                 graphs.append(self._create_vacuum_graph(pos, self.cutoff))
             else:
-                graphs.append(self._create_box_graph(pos, self.cutoff))
+                graphs.append(self._create_box_graph(pos, box_size, self.cutoff))
 
         # Batched graphs and set relative positions
         batched_graph = dgl.batch(graphs)
@@ -67,20 +69,17 @@ class GraphConstructor:
 
     @staticmethod
     def _create_box_graph(pos: Tensor, box_size: Tensor, cutoff: float):
-        adj_dir = GraphConstructor._get_adj_dir()
-        pos_copy = pos[None, :, :] + adj_dir[:, None, :] * box_size[None, :]
-        dist_mat = torch.cdist(pos[None, ...], pos_copy,
-                               compute_mode='donot_use_mm_for_euclid_dist')
-        adj_mat = dist_mat < cutoff
-        adj_mat[0].fill_diagonal_(0)
-        _, u, v = torch.nonzero(adj_mat, as_tuple=True)
-        graph = dgl.graph((u, v), num_nodes=len(pos))
+        pos = pos % box_size
+        tree = KDTree(pos.cpu().numpy(), boxsize=box_size.cpu().numpy())
+        pairs = tree.query_pairs(r=cutoff)
+        u, v = torch.tensor(list(pairs)).T
+        graph = dgl.graph((u, v), num_nodes=len(pos), device=pos.device)
         graph.ndata['pos'] = pos
         return graph
 
     @staticmethod
-    def _get_adj_dir():
-        arange = torch.arange(27) + 13
+    def _get_adj_dir(device):
+        arange = torch.arange(27, device=device) + 13
         rel_pos = torch.stack([arange//9, arange//3, arange//1]).T
         rel_pos = (rel_pos % 3) - 1
         return rel_pos
