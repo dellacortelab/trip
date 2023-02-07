@@ -73,10 +73,11 @@ class GraphConstructor:
         tree = KDTree(pos.cpu().numpy(), boxsize=box_size.cpu().numpy())
         pairs = tree.query_pairs(r=cutoff)
         u, v = torch.tensor(list(pairs)).T
+        u, v = torch.cat((u,v)), torch.cat((v,u))  # Symmetrize graph
         graph = dgl.graph((u, v), num_nodes=len(pos), device=pos.device)
         graph.ndata['pos'] = pos
         return graph
-        
+
     @staticmethod
     def _set_rel_pos(batched_graph, box_size_list):
         # Gradients need to evaluate back to pos for forces
