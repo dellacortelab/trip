@@ -110,7 +110,7 @@ box_size = torch.tensor(box_size, dtype=torch.float, device='cuda')
 res = minimize(energy_function, pos.cpu().numpy().flatten(), method='CG', jac=jacobian)
 newpos = torch.tensor(res.x, dtype=torch.float, device='cuda').reshape(-1,3)
 
-pdbfile.PDBFile.writeFile(topo, newpos, open('minimized', 'w'))
+pdbfile.PDBFile.writeFile(topo, newpos*angstrom, open('minimized', 'w'))
 
 energy, forces = sm(newpos, box_size=box_size)
 
@@ -144,13 +144,13 @@ for i in range(num_steps):
     state = simulation.context.getState(getPositions=True)
     positions = state.getPositions()
 
-    box_vectors = simulation.context.getState().getPeriodicBoxVectors(True)
-    newpos = torch.tensor([[pos.x,pos.y,pos.z] for pos in positions], dtype=torch.float, device='cuda')*10.0 # Nanometer to Angstrom
+    newpos = torch.tensor([[pos.x, pos.y, pos.z] for pos in positions],
+                          dtype=torch.float, device='cuda')*10.0 # Nanometer to Angstrom
     
     energy, forces = sm(newpos, box_size)
     
     forces *= 627.5
-    forces = forces*kilocalorie_per_mole/angstrom
+    forces = forces * kilocalorie_per_mole / angstrom
     
     #import pdb; pdb.set_trace()
 

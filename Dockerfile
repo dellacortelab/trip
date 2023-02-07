@@ -52,6 +52,9 @@ ADD requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 ADD . .
 
+RUN conda update conda
+RUN conda install -c conda-forge openmm=7.7.0
+
 ENV DGLBACKEND=pytorch
 ENV OMP_NUM_THREADS=1
 

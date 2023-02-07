@@ -76,14 +76,7 @@ class GraphConstructor:
         graph = dgl.graph((u, v), num_nodes=len(pos), device=pos.device)
         graph.ndata['pos'] = pos
         return graph
-
-    @staticmethod
-    def _get_adj_dir(device):
-        arange = torch.arange(27, device=device) + 13
-        rel_pos = torch.stack([arange//9, arange//3, arange//1]).T
-        rel_pos = (rel_pos % 3) - 1
-        return rel_pos
-
+        
     @staticmethod
     def _set_rel_pos(batched_graph, box_size_list):
         # Gradients need to evaluate back to pos for forces
@@ -93,12 +86,12 @@ class GraphConstructor:
         rel_pos = pos[dst] - pos[src]
 
         # Fix the rel_pos for boxes using PBC
-        num_nodes = batched_graph.batch_num_nodes()
-        cum_num_nodes = torch.cumsum(num_nodes, dim=0)
+        num_edges = batched_graph.batch_num_edges()
+        cum_num_edges = torch.cumsum(num_edges, dim=0)
         for i, box_size in enumerate(box_size_list):
             if not torch.isinf(box_size).all():  # Check if subgraph is periodic
-                stop = cum_num_nodes[i]
-                start = stop - num_nodes[i]
+                stop = cum_num_edges[i]
+                start = stop - num_edges[i]
                 # Periodic boundary condition
                 shifted_rel_pos = rel_pos[start:stop] + box_size/2
                 rel_pos[start:stop] = shifted_rel_pos%box_size - box_size/2
