@@ -21,6 +21,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES
 # SPDX-License-Identifier: MIT
 
+import numpy as np
 from typing import List
 
 import torch
@@ -69,8 +70,10 @@ class GraphConstructor:
 
     @staticmethod
     def _create_box_graph(pos: Tensor, box_size: Tensor, cutoff: float):
-        pos = pos % box_size
-        tree = KDTree(pos.cpu().numpy(), boxsize=box_size.cpu().numpy())
+        pos_np = pos.cpu().numpy().astype(np.double)
+        box_size_np = box_size.cpu().numpy().astype(np.double)
+        pos_np %= box_size_np
+        tree = KDTree(pos_np, boxsize=box_size_np)
         pairs = tree.query_pairs(r=cutoff)
         u, v = torch.tensor(list(pairs)).T
         u, v = torch.cat((u,v)), torch.cat((v,u))  # Symmetrize graph

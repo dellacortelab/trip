@@ -21,10 +21,11 @@ def parse_args():
                         help='The name of the output file that will be written, default=/results/md_output.pdb')
     parser.add_argument('-s', dest='stepSize',type=float, default=0.5,
                         help='Step size in femtoseconds, default=0.5')
-    parser.add_argument('-t', dest='simTime',type=float, default=1.0,
-                        help='Simulation time in picoseconds, default=1')
+    parser.add_argument('-t', dest='simTime',type=float, default=1000.0,
+                        help='Simulation time in picoseconds, default=1000')
     parser.add_argument('-m', dest='modelFile',type=str, default='/results/trip_vanilla.pth',
                         help='.pth model file name, default=')
+    parser.add_argument('-g', dest='gpu', type=str, default='0', help='Which GPU to use')
     args = parser.parse_args()
     return args
 
@@ -32,12 +33,12 @@ def parse_args():
 class TrIPModule(torch.nn.Module):
     def __init__(self, model_file, species):
         super(TrIPModule, self).__init__() 
-        self.model = TrIP.load(model_file, map_location='cuda:0')
+        self.model = TrIP.load(model_file, map_location=device)
         self.graph_constructor = GraphConstructor(cutoff=self.model.cutoff)
 
         symbol_list = AtomicData.get_atomic_symbols_list()
         symbol_dict = {symbol: i+1 for i, symbol in enumerate(symbol_list)}
-        self.species_tensor = torch.tensor([symbol_dict[atom] for atom in species], dtype=torch.int, device='cuda')
+        self.species_tensor = torch.tensor([symbol_dict[atom] for atom in species], dtype=torch.int, device=device)
 	
     def forward(self, positions, box_size, forces=True):
         graph = self.graph_constructor.create_graphs(positions, box_size) # Cutoff for 5-12 model is 3.0 A
@@ -55,14 +56,14 @@ def energy_function(positions):
     global count
     count+=1
     print(f'Energy Function called: {count}')
-    positions = torch.tensor(positions, dtype=torch.float, device='cuda').reshape(-1,3)
+    positions = torch.tensor(positions, dtype=torch.float, device=device).reshape(-1,3)
     energy = sm(positions, box_size=box_size, forces=False)
     print(f'Energy: {energy:0.5f}')
     return energy
 
 def jacobian(positions):
     print('Force Function called')
-    positions = torch.tensor(positions, dtype=torch.float, device='cuda').reshape(-1,3)
+    positions = torch.tensor(positions, dtype=torch.float, device=device).reshape(-1,3)
     _, forces = sm(positions, box_size=box_size)
     norm_forces = torch.norm(forces)
     print(f'Forces: {norm_forces:0.5f}')
@@ -70,7 +71,8 @@ def jacobian(positions):
 
 
 args = parse_args()
-
+device = f'cuda:{args.gpu}'
+torch.cuda.set_device(int(args.gpu))
 #initialize parameters
 in_file = args.inFile
 out_file = args.outFile
@@ -100,17 +102,18 @@ sm = TrIPModule(model_file, species)
 
 count = 0
 
-
-pos = torch.tensor(pdbf.getPositions(asNumpy=True)/angstrom, dtype=torch.float, device='cuda')
+pos = pdbf.getPositions(asNumpy=True) / angstrom
+pos = torch.tensor(pos, dtype=torch.float, device=device)
 
 
 box_size = topo.getUnitCellDimensions() / angstrom
-box_size = torch.tensor(box_size, dtype=torch.float, device='cuda')
+box_size = torch.tensor(box_size, dtype=torch.float, device=device)
 
 res = minimize(energy_function, pos.cpu().numpy().flatten(), method='CG', jac=jacobian)
-newpos = torch.tensor(res.x, dtype=torch.float, device='cuda').reshape(-1,3)
+newpos = torch.tensor(res.x, dtype=torch.float, device=device).reshape(-1,3)
 
-pdbfile.PDBFile.writeFile(topo, newpos*angstrom, open('minimized', 'w'))
+with open('minimized', 'w') as f:
+    pdbfile.PDBFile.writeFile(topo, newpos*angstrom, f)
 
 energy, forces = sm(newpos, box_size=box_size)
 
@@ -145,7 +148,7 @@ for i in range(num_steps):
     positions = state.getPositions()
 
     newpos = torch.tensor([[pos.x, pos.y, pos.z] for pos in positions],
-                          dtype=torch.float, device='cuda')*10.0 # Nanometer to Angstrom
+                          dtype=torch.float, device=device)*10.0 # Nanometer to Angstrom
     
     energy, forces = sm(newpos, box_size)
     
