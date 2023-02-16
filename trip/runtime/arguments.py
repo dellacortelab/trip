@@ -46,6 +46,8 @@ PARSER.add_argument('--epochs', type=int, default=100, help='Number of training 
 PARSER.add_argument('--batch_size', type=int, default=240, help='Batch size')
 PARSER.add_argument('--seed', type=int, default=None, help='Set a seed globally')
 PARSER.add_argument('--num_workers', type=int, default=8, help='Number of dataloading workers')
+PARSER.add_argument('--singlet', type=str2bool, nargs='?', const=True, default=False,
+                    help='Use custom singlet energy values')
 
 PARSER.add_argument('--amp', type=str2bool, nargs='?', const=True, default=False, help='Use Automatic Mixed Precision')
 PARSER.add_argument('--gradient_clip', type=float, default=None, help='Clipping of the gradient norms')

@@ -231,9 +231,7 @@ class TrIPModel(TrIPTransformer):
         if hasattr(self, 'si_tensor'): 
         # Add back si_energies if they exist. Used for testing but not training
             species = graph.ndata['species']
-            si_energies = self.si_tensor[(species-1).tolist()]  # -1 so H starts at 0
-            atom_energies = atom_energies + si_energies
-        
+            atom_energies += self.si_tensor[(species-1).tolist()]  # -1 so H starts at 0
         return atom_energies
 
     @staticmethod
@@ -323,7 +321,7 @@ class TrIP(TrIPModel):
         checkpoint = torch.load(str(path), map_location=map_location)
         kwargs = checkpoint['kwargs']
         model = TrIP(**kwargs)
-        model.to(device=map_location)
+        model.to(device=torch.cuda.current_device())
         model.load_state(checkpoint, map_location)
         return model
 

@@ -246,8 +246,8 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    si_dict = {1: -0.3884, 6: -37.7641, 7: -54.2119, 8: -74.9005}
-    datamodule = TrIPDataModule(si_dict=si_dict, **vars(args))
+    ebe_dict = {1: -0.3884, 6: -37.7641, 7: -54.2119, 8: -74.9005} if args.singlet else {}
+    datamodule = TrIPDataModule(ebe_dict=ebe_dict, **vars(args))
     energy_std = datamodule.energy_std.item()
     logging.info(f'Dataset energy std: {energy_std:.5f}')
 
@@ -256,6 +256,7 @@ if __name__ == '__main__':
         tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )
+    model.si_tensor = datamodule.si_tensor
     optimizer = TrIP.make_optimizer(model, **vars(args))
     graph_constructor = GraphConstructor(args.cutoff)
     add_atom_data = datamodule.add_atom_data

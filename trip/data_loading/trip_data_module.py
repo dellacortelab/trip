@@ -45,14 +45,16 @@ class TrIPDataModule(DataModule):
         super().__init__(batch_size=batch_size, num_workers=num_workers, collate_fn=self._collate)
         self._load_data(trip_file, si_dict)
 
-    def _load_data(self, trip_file: pathlib.Path, si_dict: dict):
+    def _load_data(self, trip_file: pathlib.Path, ebe_dict: dict):
         # Load data
         container = Container(trip_file)
 
         # Preprocess data
         self._species_list = self._calc_species_list(container)
         self._ebe_tensor = AtomicData.get_ebe_tensor()
-        self._si_tensor, self._energy_std = self._calc_si(container, si_dict)
+        for s, e in ebe_dict.items():  # Use custom values
+            self._ebe_tensor[s - 1] = e
+        self._si_tensor, self._energy_std = self._calc_si(container)
         self._adjusted_ae_tensor = (self._ebe_tensor - self._si_tensor) / self._energy_std  # TODO: Check this is the correct value
 
         # Make dataset
@@ -60,7 +62,7 @@ class TrIPDataModule(DataModule):
         self.ds_val = self._make_ds(container, 'val')
         self.ds_test = self._make_ds(container, 'test')
 
-    def _calc_si(self, container, si_dict):
+    def _calc_si(self, container):
         species_data, _, energy_data, _, _ = container.get_data('train')
         species_list = self._species_list
         
@@ -82,8 +84,6 @@ class TrIPDataModule(DataModule):
         si_tensor = self._ebe_tensor.clone()
         for s, e in zip(species_list, si_list):  # Use linear regression values
             si_tensor[s - 1] = e  # -1 so H starts at 0.
-        for s, e in si_dict.items():  # Use custom values
-            si_tensor[s - 1] = e
 
         # Use residuals to calculate dataset std
         sum_sq_residuals = sol[1][0]
