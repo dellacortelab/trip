@@ -41,9 +41,9 @@ class AtomicData:
         return ebe_tensor
 
     @staticmethod
-    def get_atomic_symbols_list(N=NUM_ELEMENTS):
+    def get_symbols_list(N=NUM_ELEMENTS):
         return [element(i).symbol for i in range(1,N+1)]
 
     @staticmethod
-    def get_atomic_masses_list(N=NUM_ELEMENTS):
+    def get_masses_list(N=NUM_ELEMENTS):
         return [element(i).mass for i in range(1,N+1)]

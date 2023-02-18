@@ -7,7 +7,7 @@ from openmm.unit import *
 import torch
 
 from se3_transformer.runtime.utils import str2bool
-from trip.data import atomic_data
+from trip.data import AtomicData
 
 from trip.tools.md import get_species
 from trip.tools.module import TrIPModule
@@ -51,9 +51,9 @@ if __name__ == '__main__':
                     [1, 0, 0],
                     [0, 1, 0]], device=device, dtype=torch.float)
         box_size = torch.tensor(float('inf'))
-    masses_list = atomic_data.get_atomic_masses_list()
+    masses_list = AtomicData.get_masses_list()
     masses_tensor = torch.tensor(masses_list)
-    m = masses_tensor[species]
+    m = masses_tensor[species].to(device)
     module = TrIPModule(species, **vars(args))
 
     # Minimation procedure

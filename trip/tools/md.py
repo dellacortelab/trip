@@ -35,7 +35,7 @@ def parse_args():
 
 def get_species(topo):
     symbols = [atom.element.symbol for atom in topo.atoms()]
-    symbol_list = AtomicData.get_atomic_symbols_list()
+    symbol_list = AtomicData.get_symbols_list()
     symbol_dict = {symbol: i+1 for i, symbol in enumerate(symbol_list)}
     species = [symbol_dict[symbol] for symbol in symbols]
     return species
