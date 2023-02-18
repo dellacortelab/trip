@@ -96,8 +96,8 @@ if __name__ == '__main__':
 
     # Minimation procedure
     if args.minimize:
-        logging.info('Beginning minimization')
         module.log_energy(pos, box_size)
+        logging.info('Beginning minimization')
         pos = module.minimize(pos, box_size)
         module.log_energy(pos, box_size)
         save_pdb(pos, 'minimized', **vars(args))

@@ -5,7 +5,6 @@ import torch
 from torch.autograd.functional import hessian
 
 from trip.data_loading import GraphConstructor
-
 from trip.model import TrIP
 
 
@@ -42,15 +41,14 @@ class TrIPModule(torch.nn.Module):
 
     def hess(self, pos, box_size):
         def energy(pos):
-            graph = self.graph_constructor.create_graphs(pos, box_size)
+            graph = self.graph_constructor.create_graphs(pos.reshape(-1,3), box_size)
             graph.ndata['species'] = self.species_tensor
             return self.model(graph, forces=False)
-        pos = torch.tensor(pos, dtype=torch.float, device=self.device).reshape(-1,3)
-        return hessian(energy, pos)
+        return hessian(energy, pos.flatten())
     
     def minimize(self, pos, box_size, method='CG'):
         res = minimize(self.energy_np, pos.cpu().numpy().flatten(), args=box_size, method=method,
-                       jac=self.jac_np, hess=self.hess_np)
+                       jac=self.jac_np)
         return torch.tensor(res.x, dtype=torch.float, device=self.device).reshape(-1,3)
         
     def log_energy(self, pos, box_size):
