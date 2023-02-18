@@ -10,6 +10,7 @@ import torch
 
 from se3_transformer.runtime.utils import str2bool
 
+from trip.data import AtomicData
 from trip.tools import TrIPModule
 
 
@@ -31,6 +32,13 @@ def parse_args():
     parser.add_argument('--gpu', type=int, default=0, help='Which GPU to use, default=0')
     args = parser.parse_args()
     return args
+
+def get_species(topo):
+    symbols = [atom.element.symbol for atom in topo.atoms()]
+    symbol_list = AtomicData.get_atomic_symbols_list()
+    symbol_dict = {symbol: i+1 for i, symbol in enumerate(symbol_list)}
+    species = [symbol_dict[symbol] for symbol in symbols]
+    return species
 
 def get_trip_force():
     trip_force = CustomExternalForce('c-fx*x-fy*y-fz*z')
@@ -63,18 +71,14 @@ def get_simulation(topo, system, pos, temp, dt, out, **args):
                                                   potentialEnergy=True, totalEnergy=True))
     return simulation
 
-def log_energy(module, pos, box_size):
-    energy = module(pos, box_size, forces=False)
-    logging.info(f'Energy: {energy:.4f}')
-
 
 if __name__ == '__main__':
-    # Set up
+    # Setup
     args = parse_args()
     logging.getLogger().setLevel(logging.INFO)
 
     logging.info('============ TrIP =============')
-    logging.info('|      Molecular dynamics      |')
+    logging.info('|      Molecular dynamics     |')
     logging.info('===============================')
 
     device = f'cuda:{args.gpu}'
@@ -83,7 +87,8 @@ if __name__ == '__main__':
     # Load data
     pdbf = PDBFile(args.pdb)
     topo = pdbf.topology
-    module = TrIPModule(topo, **vars(args))
+    species = get_species(topo)
+    module = TrIPModule(species, **vars(args))
     pos = pdbf.getPositions(asNumpy=True) / angstrom
     pos = torch.tensor(pos, dtype=torch.float, device=device)
     box_size = topo.getUnitCellDimensions() / angstrom
@@ -92,9 +97,9 @@ if __name__ == '__main__':
     # Minimation procedure
     if args.minimize:
         logging.info('Beginning minimization')
-        log_energy(module, pos, box_size)
+        module.log_energy(pos, box_size)
         pos = module.minimize(pos, box_size)
-        log_energy(module, pos, box_size)
+        module.log_energy(pos, box_size)
         save_pdb(pos, 'minimized', **vars(args))
         logging.info('Finished minimization!')
     
@@ -111,12 +116,12 @@ if __name__ == '__main__':
                             dtype=torch.float, device=device)*10.0 # Nanometer to Angstrom conversion
         
         energy, forces = module(pos, box_size)
-        c = 627.5 * (torch.sum(pos @ forces) + energy).item() / len(pos) * kilocalorie_per_mole  # Energy correction per atom
-        forces *= 627.5 * kilocalorie_per_mole / angstrom
+        c = 627.5 * (torch.sum(pos * forces) + energy).item() / len(pos) * kilocalorie_per_mole  # Energy correction per atom
+        forces = forces * 627.5 * kilocalorie_per_mole / angstrom
         for index, atom in enumerate(topo.atoms()):
             trip_force.setParticleParameters(index, index, [c, *forces[index]])
             
         trip_force.updateParametersInContext(simulation.context)
         simulation.step(1)
-
+    
     logging.info('Simulation finished successfully')

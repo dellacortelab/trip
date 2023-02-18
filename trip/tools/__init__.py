@@ -1,1 +1,1 @@
-from module import TrIPModule
+from trip.tools.module import TrIPModule

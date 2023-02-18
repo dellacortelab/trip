@@ -1,40 +1,75 @@
-from scipy.optimize import minimize
+import argparse
+import logging
 
-from torch.autograd.functional import hessian
-
-from trip.data_loading import GraphConstructor
-from trip.model import TrIP
+from openmm import *
+from openmm.app import *
+from openmm.unit import *
 import torch
 
-device = 'cuda:0'
-model = TrIP.load('/results/model_ani1x.pth', map_location=device)
+from se3_transformer.runtime.utils import str2bool
+from trip.data import atomic_data
 
-graph_constructor = GraphConstructor(model.cutoff)
+from trip.tools.md import get_species
+from trip.tools.module import TrIPModule
 
-# Positions of water
-pos = torch.tensor([[0, 0, 0],
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='run md simulations using TrIP')
+    parser.add_argument('--pdb', type=str, help='Path to the directory with the input pdb file', default='')
+    parser.add_argument('--model_file', type=str, default='/results/trip_vanilla.pth',
+                        help='Path to model file, default=/results/trip_vanilla.pth')
+    parser.add_argument('--minimize', type=str2bool, nargs='?', const=True, default=True,
+                        help='Whether to minimize the structure')
+    parser.add_argument('--gpu', type=int, default=0, help='Which GPU to use, default=0')
+    args = parser.parse_args()
+    return args
+
+
+if __name__ == '__main__':
+    # Setup
+    args = parse_args()
+    logging.getLogger().setLevel(logging.INFO)
+
+    logging.info('============ TrIP =============')
+    logging.info('|      Molecular dynamics     |')
+    logging.info('===============================')
+
+    device = f'cuda:{args.gpu}'
+    torch.cuda.set_device(args.gpu)
+
+    # Load data
+    if len(args.pdb):
+        pdbf = PDBFile(args.pdb)
+        topo = pdbf.topology
+        species = get_species(topo)
+        masses_list = atomic_data.get_atomic_masses_list()
+        masses_tensor = torch.tensor(masses_list)
+        m = masses_tensor[species]
+        pos = pdbf.getPositions(asNumpy=True) / angstrom
+        box_size = topo.getUnitCellDimensions() / angstrom
+        box_size = torch.tensor(box_size, dtype=torch.float, device=device)
+    else:  # Water example
+        species = [8, 1, 1]
+        m = torch.tensor([16, 1, 1], device=device)
+        pos = torch.tensor([[0, 0, 0],
                     [1, 0, 0],
                     [0, 1, 0]], device=device, dtype=torch.float)
-species = torch.tensor([8,1,1], device=device)
-m = torch.tensor([16,1,1], device=device)
+        box_size = torch.tensor(float('inf'))
+    module = TrIPModule(species, **vars(args))
 
-def energy_np(pos):
-    pos = torch.tensor(pos, device=device, dtype=torch.float)
-    return energy(pos).cpu().detach().numpy()
-
-def energy(pos):
-    graph = graph_constructor.create_graphs(pos.reshape(-1,3), torch.tensor(float('inf')))
-    graph.ndata['species'] = species
-    return model(graph, forces=False)
-
-sol = minimize(energy_np, pos.flatten().cpu().numpy())
-pos = torch.tensor(sol.x, dtype=torch.float, device=device)
-print(f'Energy: {energy(pos).item()}')
-
-h = hessian(energy, pos)
-m = m.repeat(3,1).T.flatten()
-F = h / torch.sqrt(m[:,None]*m[None,:])
-eigvals, eigvecs = torch.linalg.eig(F)
-freqs = torch.sqrt(eigvals).real.flatten()
-freqs, order = torch.sort(freqs)
-print(f'Frequencies (cm-1): {(2720.23*freqs[-3:]).tolist()}')
+    # Minimation procedure
+    if args.minimize:
+        logging.info('Beginning minimization')
+        module.log_energy(pos, box_size)
+        pos = module.minimize(pos, box_size)
+        module.log_energy(pos, box_size)
+        logging.info('Finished minimization!')
+    
+    # Frequency calculation
+    m = m.repeat(3,1).T.flatten()  # Copy 3 times for 3Ds
+    h = module.hess(pos, box_size)
+    F = h / torch.sqrt(m[:,None] * m[None,:])
+    eigvals, eigvecs = torch.linalg.eig(F)
+    freqs = torch.sqrt(eigvals).real.flatten()
+    freqs, _ = torch.sort(freqs)
+    logging.info(f'Frequencies (cm-1): {(2720.23*freqs[-3:]).tolist()}')
