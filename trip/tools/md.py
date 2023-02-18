@@ -1,163 +1,122 @@
 import argparse
+import logging
+import os
 from sys import stdout
 
 from openmm import *
 from openmm.app import *
 from openmm.unit import *
-
-from scipy.optimize import minimize
 import torch
 
+from se3_transformer.runtime.utils import str2bool
 
-from trip.data import AtomicData
-from trip.data_loading import GraphConstructor
-from trip.model import TrIP
+from trip.tools import TrIPModule
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='run md simulations using TrIP')
-    parser.add_argument('-i', dest='inFile',type=str, help='Path to the directory with the input pdb file')
-    parser.add_argument('-o', dest='outFile',type=str, default='/results/md_output.dcd',
-                        help='The name of the output file that will be written, default=/results/md_output.pdb')
-    parser.add_argument('-s', dest='stepSize',type=float, default=0.5,
-                        help='Step size in femtoseconds, default=0.5')
-    parser.add_argument('-t', dest='simTime',type=float, default=1000.0,
-                        help='Simulation time in picoseconds, default=1000')
-    parser.add_argument('-m', dest='modelFile',type=str, default='/results/trip_vanilla.pth',
-                        help='.pth model file name, default=')
-    parser.add_argument('-g', dest='gpu', type=str, default='0', help='Which GPU to use')
+    parser.add_argument('--pdb', type=str, help='Path to the directory with the input pdb file')
+    parser.add_argument('--out', type=str, default='/results/',
+                        help='The path to the output directory, default=/results/')
+    parser.add_argument('--model_file', type=str, default='/results/trip_vanilla.pth',
+                        help='Path to model file, default=/results/trip_vanilla.pth')
+    parser.add_argument('--minimize', type=str2bool, nargs='?', const=True, default=True,
+                        help='Whether to minimize the structure')
+    parser.add_argument('--dt', type=float, default=0.5,
+                        help='Step size in femtoseconds')
+    parser.add_argument('--t', type=float, default=1.,
+                        help='Simulation time in nanoseconds')
+    parser.add_argument('--temp', type=float, default=298.,
+                        help='Temperature in kelvin')
+    parser.add_argument('--gpu', type=int, default=0, help='Which GPU to use, default=0')
     args = parser.parse_args()
     return args
 
+def get_trip_force():
+    trip_force = CustomExternalForce('c-fx*x-fy*y-fz*z')
+    trip_force.addPerParticleParameter('c')  # Correction term to get correct energy
+    trip_force.addPerParticleParameter('fx')
+    trip_force.addPerParticleParameter('fy')
+    trip_force.addPerParticleParameter('fz')
+    return trip_force
 
-class TrIPModule(torch.nn.Module):
-    def __init__(self, model_file, species):
-        super(TrIPModule, self).__init__() 
-        self.model = TrIP.load(model_file, map_location=device)
-        self.graph_constructor = GraphConstructor(cutoff=self.model.cutoff)
-
-        symbol_list = AtomicData.get_atomic_symbols_list()
-        symbol_dict = {symbol: i+1 for i, symbol in enumerate(symbol_list)}
-        self.species_tensor = torch.tensor([symbol_dict[atom] for atom in species], dtype=torch.int, device=device)
-	
-    def forward(self, positions, box_size, forces=True):
-        graph = self.graph_constructor.create_graphs(positions, box_size) # Cutoff for 5-12 model is 3.0 A
-        graph.ndata['species'] = self.species_tensor
-
-        if forces:
-            energy, forces = self.model(graph, forces=forces, create_graph=False)
-            return energy.item(), forces
-        else:
-            energy = self.model(graph, forces=forces, create_graph=False)
-            return energy.item()
-
-
-def energy_function(positions):
-    global count
-    count+=1
-    print(f'Energy Function called: {count}')
-    positions = torch.tensor(positions, dtype=torch.float, device=device).reshape(-1,3)
-    energy = sm(positions, box_size=box_size, forces=False)
-    print(f'Energy: {energy:0.5f}')
-    return energy
-
-def jacobian(positions):
-    print('Force Function called')
-    positions = torch.tensor(positions, dtype=torch.float, device=device).reshape(-1,3)
-    _, forces = sm(positions, box_size=box_size)
-    norm_forces = torch.norm(forces)
-    print(f'Forces: {norm_forces:0.5f}')
-    return -forces.detach().cpu().numpy().flatten()
-
-
-args = parse_args()
-device = f'cuda:{args.gpu}'
-torch.cuda.set_device(int(args.gpu))
-#initialize parameters
-in_file = args.inFile
-out_file = args.outFile
-step_size = args.stepSize
-simulation_time = args.simTime
-model_file = args.modelFile
-
-pdbf = PDBFile(in_file)
-topo = pdbf.topology
-
-system = System()
-for atom in topo.atoms():
-    system.addParticle(atom.element.mass)
-
-trip_force = CustomExternalForce('-fx*x-fy*y-fz*z')
-system.addForce(trip_force)
-trip_force.addPerParticleParameter('fx')
-trip_force.addPerParticleParameter('fy')
-trip_force.addPerParticleParameter('fz')
-
-species = []
-for atom in topo.atoms():
-    sym = atom.element.symbol
-    species.append(sym)
-
-sm = TrIPModule(model_file, species)
-
-count = 0
-
-pos = pdbf.getPositions(asNumpy=True) / angstrom
-pos = torch.tensor(pos, dtype=torch.float, device=device)
-
-
-box_size = topo.getUnitCellDimensions() / angstrom
-box_size = torch.tensor(box_size, dtype=torch.float, device=device)
-
-res = minimize(energy_function, pos.cpu().numpy().flatten(), method='CG', jac=jacobian)
-newpos = torch.tensor(res.x, dtype=torch.float, device=device).reshape(-1,3)
-
-with open('minimized', 'w') as f:
-    pdbfile.PDBFile.writeFile(topo, newpos*angstrom, f)
-
-energy, forces = sm(newpos, box_size=box_size)
-
-
-index = 0
-for atom in topo.atoms():
-    trip_force.addParticle(index, (forces[index][0].item()*627.5, forces[index][1].item()*627.5, forces[index][2].item()*627.5)*kilocalorie_per_mole/angstrom)
-    index+=1
-
-newpos = pos
-temperature = 298.0 * kelvin
-integrator = LangevinIntegrator(temperature, 1/picosecond, step_size*femtosecond)
-simulation = Simulation(topo, system, integrator)
-
-
-positions = newpos.tolist()*angstrom
-simulation.context.setPositions(positions)
-simulation.context.setVelocitiesToTemperature(temperature)
-
-
-state = simulation.context.getState(getPositions=True, getVelocities=True)
-
-#Run simulation and do force calculations
-simulation.reporters.append(DCDReporter(out_file, 1))
-simulation.reporters.append(StateDataReporter(stdout, 1, step=True, potentialEnergy=True, totalEnergy=True, temperature=True))
-
-num_steps = int((simulation_time/step_size)*1000)
-
-for i in range(num_steps):
-    simulation.step(1)
-    state = simulation.context.getState(getPositions=True)
-    positions = state.getPositions()
-
-    newpos = torch.tensor([[pos.x, pos.y, pos.z] for pos in positions],
-                          dtype=torch.float, device=device)*10.0 # Nanometer to Angstrom
-    
-    energy, forces = sm(newpos, box_size)
-    
-    forces *= 627.5
-    forces = forces * kilocalorie_per_mole / angstrom
-    
-    #import pdb; pdb.set_trace()
-
+def get_system(topo, trip_force):
+    system = System()
+    for atom in topo.atoms():
+        system.addParticle(atom.element.mass)
+    system.addForce(trip_force)
     for index, atom in enumerate(topo.atoms()):
-        trip_force.setParticleParameters(index, index, forces[index])
+        trip_force.addParticle(index, (0, 0, 0, 0) * kilocalorie_per_mole/angstrom)
+    return system
+
+def save_pdb(pos, name, out, **args):
+    with open(os.path.join(out, name+'.pdb'), 'w') as f:
+        pdbfile.PDBFile.writeFile(topo, pos*angstrom, f)
+    
+def get_simulation(topo, system, pos, temp, dt, out, **args):
+    integrator = LangevinIntegrator(temp*kelvin, 1/picosecond, dt*femtosecond)
+    simulation = Simulation(topo, system, integrator)
+    simulation.context.setPositions(pos.tolist() * angstrom)
+    simulation.context.setVelocitiesToTemperature(temp * kelvin)
+    simulation.reporters.append(DCDReporter(os.path.join(out, 'trajectory.dcd'), 1))
+    simulation.reporters.append(StateDataReporter(stdout, 1, step=True, temperature=True,
+                                                  potentialEnergy=True, totalEnergy=True))
+    return simulation
+
+def log_energy(module, pos, box_size):
+    energy = module(pos, box_size, forces=False)
+    logging.info(f'Energy: {energy:.4f}')
+
+
+if __name__ == '__main__':
+    # Set up
+    args = parse_args()
+    logging.getLogger().setLevel(logging.INFO)
+
+    logging.info('============ TrIP =============')
+    logging.info('|      Molecular dynamics      |')
+    logging.info('===============================')
+
+    device = f'cuda:{args.gpu}'
+    torch.cuda.set_device(args.gpu)
+
+    # Load data
+    pdbf = PDBFile(args.pdb)
+    topo = pdbf.topology
+    module = TrIPModule(topo, **vars(args))
+    pos = pdbf.getPositions(asNumpy=True) / angstrom
+    pos = torch.tensor(pos, dtype=torch.float, device=device)
+    box_size = topo.getUnitCellDimensions() / angstrom
+    box_size = torch.tensor(box_size, dtype=torch.float, device=device)
+
+    # Minimation procedure
+    if args.minimize:
+        logging.info('Beginning minimization')
+        log_energy(module, pos, box_size)
+        pos = module.minimize(pos, box_size)
+        log_energy(module, pos, box_size)
+        save_pdb(pos, 'minimized', **vars(args))
+        logging.info('Finished minimization!')
+    
+    # Run simulation
+    trip_force = get_trip_force()
+    system = get_system(topo, trip_force)
+    simulation = get_simulation(topo, system, pos, **vars(args))
+    num_steps = int(1e6 * args.t / args.dt)  # 1e6 is the ratio of femtoseconds to nanoseconds
+
+    logging.info('Beginning simulation')
+    for i in range(num_steps):
+        pos = simulation.context.getState(getPositions=True).getPositions()
+        pos = torch.tensor([[p.x, p.y, p.z] for p in pos],
+                            dtype=torch.float, device=device)*10.0 # Nanometer to Angstrom conversion
         
-    trip_force.updateParametersInContext(simulation.context)
+        energy, forces = module(pos, box_size)
+        c = 627.5 * (torch.sum(pos @ forces) + energy).item() / len(pos) * kilocalorie_per_mole  # Energy correction per atom
+        forces *= 627.5 * kilocalorie_per_mole / angstrom
+        for index, atom in enumerate(topo.atoms()):
+            trip_force.setParticleParameters(index, index, [c, *forces[index]])
+            
+        trip_force.updateParametersInContext(simulation.context)
+        simulation.step(1)
+
+    logging.info('Simulation finished successfully')

@@ -70,7 +70,7 @@ class GraphConstructor:
 
     @staticmethod
     def _create_box_graph(pos: Tensor, box_size: Tensor, cutoff: float):
-        pos_np = pos.cpu().numpy().astype(np.double)
+        pos_np = pos.detach().cpu().numpy().astype(np.double)
         box_size_np = box_size.cpu().numpy().astype(np.double)
         pos_np %= box_size_np
         tree = KDTree(pos_np, boxsize=box_size_np)
