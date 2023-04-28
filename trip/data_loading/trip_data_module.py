@@ -39,11 +39,11 @@ class TrIPDataModule(DataModule):
                  trip_file: pathlib.Path,
                  batch_size: int = 1,
                  num_workers: int = 8,
-                 si_dict: dict = {},
+                 ebe_dict: dict = {},
                  **kwargs,
                  ):
         super().__init__(batch_size=batch_size, num_workers=num_workers, collate_fn=self._collate)
-        self._load_data(trip_file, si_dict)
+        self._load_data(trip_file, ebe_dict)
 
     def _load_data(self, trip_file: pathlib.Path, ebe_dict: dict):
         # Load data
@@ -81,7 +81,7 @@ class TrIPDataModule(DataModule):
 
         # Create si_tensor
         si_list = sol[0].tolist()
-        si_tensor = self._ebe_tensor.clone()
+        si_tensor = self._ebe_tensor.clone()  # Won't actually use ebe values
         for s, e in zip(species_list, si_list):  # Use linear regression values
             si_tensor[s - 1] = e  # -1 so H starts at 0.
 

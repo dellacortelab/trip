@@ -200,7 +200,7 @@ class TrIPModel(TrIPTransformer):
     def forward(self, graph, forces=True, create_graph=False, standardized=False):
         atom_energies = self.forward_atom_energies(graph, standardized)
         energies = self.pool(graph, atom_energies)
-
+        import pdb; pdb.set_trace()
         if not forces:
             return energies
         forces = -torch.autograd.grad(torch.sum(energies),
@@ -231,7 +231,7 @@ class TrIPModel(TrIPTransformer):
         if hasattr(self, 'si_tensor'): 
         # Add back si_energies if they exist. Used for testing but not training
             species = graph.ndata['species']
-            atom_energies += self.si_tensor[(species-1).tolist()]  # -1 so H starts at 0
+            atom_energies = atom_energies + self.si_tensor[(species-1).tolist()]  # -1 so H starts at 0
         return atom_energies
 
     @staticmethod

@@ -10,8 +10,8 @@ import torch
 
 from se3_transformer.runtime.utils import str2bool
 
-from trip.data import AtomicData
-from trip.tools import TrIPModule
+from trip.tools import TrIPModule, get_species
+
 
 
 def parse_args():
@@ -33,13 +33,6 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def get_species(topo):
-    symbols = [atom.element.symbol for atom in topo.atoms()]
-    symbol_list = AtomicData.get_symbols_list()
-    symbol_dict = {symbol: i+1 for i, symbol in enumerate(symbol_list)}
-    species = [symbol_dict[symbol] for symbol in symbols]
-    return species
-
 def get_trip_force():
     trip_force = CustomExternalForce('c-fx*x-fy*y-fz*z')
     trip_force.addPerParticleParameter('c')  # Correction term to get correct energy
@@ -56,10 +49,6 @@ def get_system(topo, trip_force):
     for index, atom in enumerate(topo.atoms()):
         trip_force.addParticle(index, (0, 0, 0, 0) * kilocalorie_per_mole/angstrom)
     return system
-
-def save_pdb(pos, name, out, **args):
-    with open(os.path.join(out, name+'.pdb'), 'w') as f:
-        pdbfile.PDBFile.writeFile(topo, pos*angstrom, f)
     
 def get_simulation(topo, system, pos, temp, dt, out, **args):
     integrator = LangevinIntegrator(temp*kelvin, 1/picosecond, dt*femtosecond)
@@ -100,7 +89,7 @@ if __name__ == '__main__':
         logging.info('Beginning minimization')
         pos = module.minimize(pos, box_size)
         module.log_energy(pos, box_size)
-        save_pdb(pos, 'minimized', **vars(args))
+        save_pdb(pos, topo, 'minimized', **vars(args))
         logging.info('Finished minimization!')
     
     # Run simulation

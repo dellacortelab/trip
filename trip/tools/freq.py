@@ -48,12 +48,13 @@ if __name__ == '__main__':
     else:  # Water example
         species = [8, 1, 1]
         pos = torch.tensor([[0, 0, 0],
-                    [1, 0, 0],
-                    [0, 1, 0]], device=device, dtype=torch.float)
+                            [1, 0, 0],
+                            [0, 1, 0]], device=device, dtype=torch.float)
         box_size = torch.tensor(float('inf'))
     masses_list = AtomicData.get_masses_list()
     masses_tensor = torch.tensor(masses_list)
-    m = masses_tensor[species].to(device)
+    species_tensor = torch.tensor(species)
+    m = masses_tensor[species_tensor-1].to(device)
     module = TrIPModule(species, **vars(args))
 
     # Minimation procedure
