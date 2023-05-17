@@ -53,6 +53,19 @@ cd -
 
 ## Tools
 All of these tools share similar arguments. To see the arguments for a certain script, use -h.
+
+### Torsion scan of ephedrine
+```
+python -m trip.tools.torsion_scan --pdb /results/ephedrine.pdb --atom_nums 13,10,15,18
+python -m trip.tools.torsion_scan --pdb /results/ephedrine.pdb --atom_nums 13,10,15,18 --model_file ani1x --label ani
+```
+
+### Potential energy surface of H2o
+```
+python -m trip.tools.pes
+python -m trip.tools.pes --model_file ani1x --label ani
+```
+
 ### Frequency Analysis
 Run geometry optimization then frequency analysis. The default molecule is water.
 ```
@@ -69,4 +82,3 @@ python -m trip.tools.md
 ```
 python -m trip.tools.energy_sweep
 ```
-

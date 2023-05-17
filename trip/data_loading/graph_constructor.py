@@ -38,23 +38,23 @@ class GraphConstructor:
 
     def create_graphs(self,
                       pos_list: List[Tensor],
-                      box_size_list : List[Tensor]):
+                      boxsize_list : List[Tensor]):
         # Provide support when creating a single graph
         if not isinstance(pos_list, list):
             pos_list = [pos_list]
-            box_size_list = [box_size_list]
+            boxsize_list = [boxsize_list]
 
         # Create graphs
         graphs = []
-        for pos, box_size in zip(pos_list, box_size_list):
-            if torch.isinf(box_size).all():
+        for pos, boxsize in zip(pos_list, boxsize_list):
+            if torch.isinf(boxsize).all():
                 graphs.append(self._create_vacuum_graph(pos, self.cutoff))
             else:
-                graphs.append(self._create_box_graph(pos, box_size, self.cutoff))
+                graphs.append(self._create_box_graph(pos, boxsize, self.cutoff))
 
         # Batched graphs and set relative positions
         batched_graph = dgl.batch(graphs)
-        batched_graph = self._set_rel_pos(batched_graph, box_size_list)
+        batched_graph = self._set_rel_pos(batched_graph, boxsize_list)
         return batched_graph
 
     @staticmethod
@@ -69,11 +69,11 @@ class GraphConstructor:
         return graph
 
     @staticmethod
-    def _create_box_graph(pos: Tensor, box_size: Tensor, cutoff: float):
+    def _create_box_graph(pos: Tensor, boxsize: Tensor, cutoff: float):
         pos_np = pos.detach().cpu().numpy().astype(np.double)
-        box_size_np = box_size.cpu().numpy().astype(np.double)
-        pos_np %= box_size_np
-        tree = KDTree(pos_np, boxsize=box_size_np)
+        boxsize_np = boxsize.cpu().numpy().astype(np.double)
+        pos_np %= boxsize_np
+        tree = KDTree(pos_np, boxsize=boxsize_np)
         pairs = tree.query_pairs(r=cutoff)
         u, v = torch.tensor(list(pairs)).T
         u, v = torch.cat((u,v)), torch.cat((v,u))  # Symmetrize graph
@@ -82,7 +82,7 @@ class GraphConstructor:
         return graph
 
     @staticmethod
-    def _set_rel_pos(batched_graph, box_size_list):
+    def _set_rel_pos(batched_graph, boxsize_list):
         # Gradients need to evaluate back to pos for forces
         batched_graph.ndata['pos'].requires_grad_(True)
         src, dst = batched_graph.edges()
@@ -92,13 +92,13 @@ class GraphConstructor:
         # Fix the rel_pos for boxes using PBC
         num_edges = batched_graph.batch_num_edges()
         cum_num_edges = torch.cumsum(num_edges, dim=0)
-        for i, box_size in enumerate(box_size_list):
-            if not torch.isinf(box_size).all():  # Check if subgraph is periodic
+        for i, boxsize in enumerate(boxsize_list):
+            if not torch.isinf(boxsize).all():  # Check if subgraph is periodic
                 stop = cum_num_edges[i]
                 start = stop - num_edges[i]
                 # Periodic boundary condition
-                shifted_rel_pos = rel_pos[start:stop] + box_size/2
-                rel_pos[start:stop] = shifted_rel_pos%box_size - box_size/2
+                shifted_rel_pos = rel_pos[start:stop] + boxsize/2
+                rel_pos[start:stop] = shifted_rel_pos%boxsize - boxsize/2
 
         batched_graph.edata['rel_pos'] = rel_pos
         return batched_graph

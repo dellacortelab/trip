@@ -172,12 +172,14 @@ class TrIPModel(TrIPTransformer):
                  energy_std: float,
                  cutoff: float,
                  coulomb_energy_unit: float,
+                 si_tensor: Tensor,
                  **kwargs):
         self.num_degrees = num_degrees
         self.num_channels = num_channels
         self.energy_std = energy_std
         self.cutoff = cutoff
         self.coulomb_energy_unit = coulomb_energy_unit
+        self.si_tensor = si_tensor
 
         num_out_channels = num_channels * num_degrees
         super().__init__(   
@@ -200,7 +202,6 @@ class TrIPModel(TrIPTransformer):
     def forward(self, graph, forces=True, create_graph=False, standardized=False):
         atom_energies = self.forward_atom_energies(graph, standardized)
         energies = self.pool(graph, atom_energies)
-        import pdb; pdb.set_trace()
         if not forces:
             return energies
         forces = -torch.autograd.grad(torch.sum(energies),
@@ -225,13 +226,11 @@ class TrIPModel(TrIPTransformer):
         atom_energies = learned_energies + coulomb_energies
         if standardized:
             return atom_energies
-
-        # Return relative energies if requested
+        
+        # Used for testing but not training
         atom_energies = atom_energies * self.energy_std
-        if hasattr(self, 'si_tensor'): 
-        # Add back si_energies if they exist. Used for testing but not training
-            species = graph.ndata['species']
-            atom_energies = atom_energies + self.si_tensor[(species-1).tolist()]  # -1 so H starts at 0
+        species = graph.ndata['species']
+        atom_energies = atom_energies + self.si_tensor[(species-1).tolist()]  # -1 so H starts at 0
         return atom_energies
 
     @staticmethod
@@ -242,7 +241,7 @@ class TrIPModel(TrIPTransformer):
 
     @staticmethod
     def bump_fn(x, k=1):
-        return torch.exp(1 - k / (1 - x**2))
+        return torch.exp(k - k / (1 - x**2))
 
     def screened_coulomb(self, graph, dist, scale):
         Z = graph.ndata['species']

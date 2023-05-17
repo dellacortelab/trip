@@ -3,7 +3,7 @@ from torch import nn
 
 
 class Constraint(nn.Module):
-    def __init__(self, atom_nums, equil, device, k=1e3):
+    def __init__(self, atom_nums, equil, device, k=1e2):
         super().__init__()
         self.atom_nums = torch.tensor(atom_nums, device=device)
         self.equil = torch.tensor(equil, device=device)
@@ -26,7 +26,7 @@ class Constraint(nn.Module):
 
 
 class DistanceConstraint(Constraint):
-    def __init__(self, atom_nums, equil, device, k=1e3):
+    def __init__(self, atom_nums, equil, device, k=1e2):
         super().__init__(atom_nums, equil, device, k)
 
     def calc_quantity(self, pos):
@@ -35,7 +35,7 @@ class DistanceConstraint(Constraint):
     
 
 class AngleConstraint(Constraint):
-    def __init__(self, atom_nums, equil, device, k=1e3):
+    def __init__(self, atom_nums, equil, device, k=1e2):
         super().__init__(atom_nums, equil, device, k)
 
     def calc_quantity(self, pos):
@@ -48,9 +48,9 @@ class AngleConstraint(Constraint):
         return torch.arccos(dot / (norm_u * norm_v))
 
 
-class DihederalConstraint(Constraint):
-    def __init__(self, atom_nums, equil, device, k=1e3):
-        super().__init__(atom_nums, equil, device, k)
+class DihedralConstraint(Constraint):
+    def __init__(self, atom_nums, equil, device, k=1e2):
+        super().__init__(atom_nums, equil, device, k=k)
 
     def calc_quantity(self, pos):
         ''' Praxeolitic formula '''
@@ -68,7 +68,7 @@ class DihederalConstraint(Constraint):
 
         # Calculate and return angle
         x = torch.inner(u, w)
-        y = torch.inner(torch.cross(u, v), w)
+        y = torch.inner(torch.cross(u, w), v)
         return torch.atan2(y, x)
 
     def error_fn(self, diff):

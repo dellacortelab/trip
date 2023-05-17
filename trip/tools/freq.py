@@ -41,16 +41,17 @@ if __name__ == '__main__':
     if len(args.pdb):
         pdbf = PDBFile(args.pdb)
         topo = pdbf.topology
+        symbols = [atom.element.symbol for atom in topo.atoms()]
         species = get_species(topo)
         pos = pdbf.getPositions(asNumpy=True) / angstrom
-        box_size = topo.getUnitCellDimensions() / angstrom
-        box_size = torch.tensor(box_size, dtype=torch.float, device=device)
+        boxsize = topo.getUnitCellDimensions() / angstrom
+        boxsize = torch.tensor(boxsize, dtype=torch.float, device=device)
     else:  # Water example
         species = [8, 1, 1]
         pos = torch.tensor([[0, 0, 0],
                             [1, 0, 0],
                             [0, 1, 0]], device=device, dtype=torch.float)
-        box_size = torch.tensor(float('inf'))
+        boxsize = torch.tensor(float('inf'))
     masses_list = AtomicData.get_masses_list()
     masses_tensor = torch.tensor(masses_list)
     species_tensor = torch.tensor(species)
@@ -59,15 +60,15 @@ if __name__ == '__main__':
 
     # Minimation procedure
     if args.minimize:
-        module.log_energy(pos, box_size)
+        module.log_energy(pos, boxsize)
         logging.info('Beginning minimization')
-        pos = module.minimize(pos, box_size)
-        module.log_energy(pos, box_size)
+        pos = module.minimize(pos, boxsize)
+        module.log_energy(pos, boxsize)
         logging.info('Finished minimization!')
     
     # Frequency calculation
     m = m.repeat(3,1).T.flatten()  # Copy 3 times for 3Ds
-    h = module.hess(pos, box_size)
+    h = module.hess(pos, boxsize)
     F = h / torch.sqrt(m[:,None] * m[None,:])
     eigvals, eigvecs = torch.linalg.eig(F)
     freqs = torch.sqrt(eigvals).real.flatten()

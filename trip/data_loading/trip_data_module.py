@@ -103,15 +103,15 @@ class TrIPDataModule(DataModule):
                          *container.get_data(name))
         return ds
 
-    def add_atom_data(self, species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor):
+    def add_atom_data(self, species_tensor, pos_list, energy_tensor, forces_tensor, boxsize_tensor):
         atom_species = torch.tensor(self._species_list)
         num_atoms = len(atom_species)
         species_tensor = torch.cat((species_tensor, atom_species))
         pos_list.extend(num_atoms*[torch.zeros((1,3), dtype=torch.float)])
         energy_tensor = torch.cat((energy_tensor, self._adjusted_ae_tensor[atom_species-1]))
         forces_tensor = torch.cat((forces_tensor, torch.zeros((num_atoms,3), dtype=torch.float)))
-        box_size_tensor = torch.cat((box_size_tensor, torch.full((num_atoms,3), float('inf'), dtype=torch.float)))
-        return (species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor), num_atoms
+        boxsize_tensor = torch.cat((boxsize_tensor, torch.full((num_atoms,3), float('inf'), dtype=torch.float)))
+        return (species_tensor, pos_list, energy_tensor, forces_tensor, boxsize_tensor), num_atoms
 
     @property
     def species_list(self):
@@ -127,12 +127,12 @@ class TrIPDataModule(DataModule):
 
     @staticmethod
     def _collate(samples):
-        species_list, pos_list, energy_list, forces_list, box_size_list = list(map(list, zip(*samples)))
+        species_list, pos_list, energy_list, forces_list, boxsize_list = list(map(list, zip(*samples)))
         species_tensor = torch.cat(species_list)
         energy_tensor = torch.stack(energy_list)
         forces_tensor = torch.cat(forces_list)
-        box_size_tensor = torch.stack(box_size_list, dim=0)
-        return species_tensor, pos_list, energy_tensor, forces_tensor, box_size_tensor
+        boxsize_tensor = torch.stack(boxsize_list, dim=0)
+        return species_tensor, pos_list, energy_tensor, forces_tensor, boxsize_tensor
 
     @staticmethod
     def _to_ds_format(species_data, pos_data, energy_data, forces_data, box_data):
@@ -166,7 +166,7 @@ class TrIPDataset(Dataset):
                  pos_list: List[Tensor],
                  energy_list: List[Tensor],
                  forces_list: List[Tensor],
-                 box_size_list: List[Tensor]):
+                 boxsize_list: List[Tensor]):
         """
         :param si_tensor:           Tensor of self interaction energies sorted by atomic number.
         :param energy_std:          Standard deviation of energies adjusted by subtracting si energies.
@@ -174,8 +174,8 @@ class TrIPDataset(Dataset):
         :param pos_list:            List of tensors of positions (Shape: [N,3]).
         :param energy_list:         List of floats of system energies.
         :param forces_list:         List of tensors of forces (Shape: [N,3]).
-        :param box_size_list:       If box_size is not None then the graphs are constructed using periodic BC's using
-                                    the values in box_size (Shape: [1] or [3])
+        :param boxsize_list:       If boxsize is not None then the graphs are constructed using periodic BC's using
+                                    the values in boxsize (Shape: [1] or [3])
         """
 
         self.si_tensor = si_tensor
@@ -184,7 +184,7 @@ class TrIPDataset(Dataset):
         self.pos_list = pos_list
         self.energy_list = energy_list
         self.forces_list = forces_list
-        self.box_size_list = box_size_list
+        self.boxsize_list = boxsize_list
 
         len_tensor = torch.tensor([len(pos_tensor) for pos_tensor in pos_list])
         self.cumsum = [0] + torch.cumsum(len_tensor, dim=0).tolist()
@@ -199,11 +199,11 @@ class TrIPDataset(Dataset):
         pos = self.pos_list[mol_idx][conf_idx]
         energy = self.energy_list[mol_idx][conf_idx]
         forces = self.forces_list[mol_idx][conf_idx]
-        box_size = self.box_size_list[mol_idx][conf_idx]
+        boxsize = self.boxsize_list[mol_idx][conf_idx]
         
         # Normalize dataset
         adjustment = torch.sum(self.si_tensor[(species-1).tolist()])
         energy = (energy-adjustment) / self.energy_std
         forces = forces / self.energy_std  # Linear property of derivatives requires this
-        return species, pos, energy, forces, box_size
+        return species, pos, energy, forces, boxsize
         

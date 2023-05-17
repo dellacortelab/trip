@@ -76,19 +76,20 @@ if __name__ == '__main__':
     # Load data
     pdbf = PDBFile(args.pdb)
     topo = pdbf.topology
-    species = get_species(topo)
+    symbols = [atom.element.symbol for atom in topo.atoms()]
+    species = get_species(symbols)
     module = TrIPModule(species, **vars(args))
     pos = pdbf.getPositions(asNumpy=True) / angstrom
     pos = torch.tensor(pos, dtype=torch.float, device=device)
-    box_size = topo.getUnitCellDimensions() / angstrom
-    box_size = torch.tensor(box_size, dtype=torch.float, device=device)
+    boxsize = topo.getUnitCellDimensions() / angstrom
+    boxsize = torch.tensor(boxsize, dtype=torch.float, device=device)
 
     # Minimation procedure
     if args.minimize:
-        module.log_energy(pos, box_size)
+        module.log_energy(pos, boxsize)
         logging.info('Beginning minimization')
-        pos = module.minimize(pos, box_size)
-        module.log_energy(pos, box_size)
+        pos = module.minimize(pos, boxsize)
+        module.log_energy(pos, boxsize)
         save_pdb(pos, topo, 'minimized', **vars(args))
         logging.info('Finished minimization!')
     
@@ -104,8 +105,8 @@ if __name__ == '__main__':
         pos = torch.tensor([[p.x, p.y, p.z] for p in pos],
                             dtype=torch.float, device=device)*10.0 # Nanometer to Angstrom conversion
         
-        energy, forces = module(pos, box_size)
-        c = 627.5 * (torch.sum(pos * forces) + energy).item() / len(pos) * kilocalorie_per_mole  # Energy correction per atom
+        energy, forces = module(pos, boxsize)
+        c = 627.5 * kilocalorie_per_mole * (energy + torch.sum(pos * forces)).item() / len(pos)  # Energy correction per atom
         forces = forces * 627.5 * kilocalorie_per_mole / angstrom
         for index, atom in enumerate(topo.atoms()):
             trip_force.setParticleParameters(index, index, [c, *forces[index]])

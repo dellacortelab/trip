@@ -80,10 +80,10 @@ def idx_lists(idx_list, *value_lists):
         new_value_lists.append([value_list[j] for j in idx_list])
     return new_value_lists
 
-box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]
+boxsize_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]
 
-container.set_data('train', *idx_lists(train_idx, species_data, pos_data, energy_data, forces_data, box_size_data))
-container.set_data('val', *idx_lists(val_idx, species_data, pos_data, energy_data, forces_data, box_size_data))
+container.set_data('train', *idx_lists(train_idx, species_data, pos_data, energy_data, forces_data, boxsize_data))
+container.set_data('val', *idx_lists(val_idx, species_data, pos_data, energy_data, forces_data, boxsize_data))
 
 
 # Do testing 
@@ -108,14 +108,14 @@ for subdir in os.listdir(test_dir):
                     forces_data.append(-torch.tensor(np.array(mol['forces']), dtype=torch.float32))  # COMP6's forces have wrong sign
 
 
-box_size_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]
+boxsize_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]
 
-container.set_data('test', species_data, pos_data, energy_data, forces_data, box_size_data)
+container.set_data('test', species_data, pos_data, energy_data, forces_data, boxsize_data)
 save_path = os.path.join(data_dir, 'ani1x.trip')
 
 container.save_data(save_path)
 
-# Now create a testing subset (not a test set)
+# Now create a small subset for testing the code
 test_container = Container()
 
 subsets = ['train', 'val', 'test']

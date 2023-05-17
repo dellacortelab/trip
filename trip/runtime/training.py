@@ -91,9 +91,9 @@ def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
         batch, num_atoms = add_atom_data(*batch)
-        species, pos_list, energy, forces, box_size = to_cuda(batch)
+        species, pos_list, energy, forces, boxsize = to_cuda(batch)
         target = energy, forces
-        graph = graph_constructor.create_graphs(pos_list, box_size)
+        graph = graph_constructor.create_graphs(pos_list, boxsize)
         graph.ndata['species'] = species
 
         for callback in callbacks:
@@ -253,10 +253,10 @@ if __name__ == '__main__':
 
     model = TrIP(
         energy_std=energy_std,
+        si_tensor=datamodule.si_tensor,
         tensor_cores=using_tensor_cores(args.amp),  # use Tensor Cores more effectively,
         **vars(args)
     )
-    model.si_tensor = datamodule.si_tensor
     optimizer = TrIP.make_optimizer(model, **vars(args))
     graph_constructor = GraphConstructor(args.cutoff)
     add_atom_data = datamodule.add_atom_data

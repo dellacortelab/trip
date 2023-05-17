@@ -1,8 +1,7 @@
 from trip.data import AtomicData
 
 
-def get_species(topo):
-    symbols = [atom.element.symbol for atom in topo.atoms()]
+def get_species(symbols):
     symbol_list = AtomicData.get_symbols_list()
     symbol_dict = {symbol: i+1 for i, symbol in enumerate(symbol_list)}
     species = [symbol_dict[symbol] for symbol in symbols]

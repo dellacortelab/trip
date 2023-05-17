@@ -47,9 +47,9 @@ def evaluate(model: nn.Module,
              args):
     for _, batch in tqdm(enumerate(dataloader), total=len(dataloader), unit='batch', desc=f'Evaluation',
                          leave=False, disable=(args.silent or get_local_rank() != 0)):
-        species, pos_list, energy, forces, box_size = to_cuda(batch)
+        species, pos_list, energy, forces, boxsize = to_cuda(batch)
         target = energy, forces
-        graph = graph_constructor.create_graphs(pos_list, box_size)
+        graph = graph_constructor.create_graphs(pos_list, boxsize)
         graph.ndata['species'] = species
 
         for callback in callbacks:
