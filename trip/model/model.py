@@ -172,7 +172,7 @@ class TrIPModel(TrIPTransformer):
                  energy_std: float,
                  cutoff: float,
                  coulomb_energy_unit: float,
-                 si_tensor: Tensor,
+                 si_tensor: Tensor = None,
                  **kwargs):
         self.num_degrees = num_degrees
         self.num_channels = num_channels
@@ -241,7 +241,7 @@ class TrIPModel(TrIPTransformer):
 
     @staticmethod
     def bump_fn(x, k=1):
-        return torch.exp(k - k / (1 - x**2))
+        return torch.exp(1 - k / (1 - x**2))  # This should be k - k for bump to be 0 near origin. This is a bug!
 
     def screened_coulomb(self, graph, dist, scale):
         Z = graph.ndata['species']
@@ -297,7 +297,7 @@ class TrIP(TrIPModel):
         checkpoint = self.get_checkpoint(epoch)
         torch.save(checkpoint, str(path))
 
-    def checkpoint(self, epoch: int):
+    def get_checkpoint(self, epoch: int):
         checkpoint = {
             'state_dict': self.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict() if self.optimizer else None,
@@ -354,7 +354,7 @@ class TrIP(TrIPModel):
             {'params': decay, 'weight_decay': weight_decay}]
 
     @staticmethod
-    def loss_fn(pred, target, beta=1e-1):  # Similar to Huberloss, but smoother
+    def loss_fn(pred, target, beta=1e-1):  # Uses Pseudo Huber Loss
         calc_loss = lambda x : beta * (torch.mean(torch.sqrt(x + beta**2/4)) - beta/2)  # Approximates mean(x) when x << beta, approximates beta*mean(sqrt(x)) when x >> beta
         energy_loss = calc_loss((pred[0] - target[0])**2)
         forces_loss = calc_loss(torch.sum((pred[1] - target[1])**2, dim=1))  # Argument is squared norm
@@ -362,8 +362,9 @@ class TrIP(TrIPModel):
 
     @staticmethod
     def error_fn(pred, target, num_atoms=0):
-        energy_error = torch.mean((pred[0][:-num_atoms] - target[0][:-num_atoms])**2)
-        forces_error = torch.mean(torch.mean((pred[1][:-num_atoms] - target[1][:-num_atoms])**2, dim=1))
+        end = len(pred[0]-num_atoms)
+        energy_error = torch.mean((pred[0][:end] - target[0][:end])**2)
+        forces_error = torch.mean(torch.mean((pred[1][:end] - target[1][:end])**2, dim=1))
         return energy_error, forces_error
 
     @staticmethod

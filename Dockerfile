@@ -53,7 +53,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 ADD . .
 
 RUN conda update conda
-RUN conda install -c conda-forge openmm=7.7.0
+RUN conda install -c conda-forge mamba
+#RUN conda install -c conda-forge openmm 
+RUN mamba install openff-toolkit openff-qcsubmit
 
 ENV DGLBACKEND=pytorch
 ENV OMP_NUM_THREADS=1

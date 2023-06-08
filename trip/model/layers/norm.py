@@ -36,7 +36,7 @@ from se3_transformer.model import Fiber
 
 class TrIPActivation(nn.Module):
     """
-    A smooth activation function regardless of the parity of incoming features
+    A smooth activation function
     """
     def __init__(self):
         super(TrIPActivation, self).__init__()

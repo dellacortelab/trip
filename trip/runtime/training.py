@@ -246,8 +246,7 @@ if __name__ == '__main__':
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
 
-    ebe_dict = {1: -0.3872, 6: -37.6274, 7: -54.3531, 8: -74.9400} if args.singlet else {}
-    datamodule = TrIPDataModule(ebe_dict=ebe_dict, **vars(args))
+    datamodule = TrIPDataModule(**vars(args))
     energy_std = datamodule.energy_std.item()
     logging.info(f'Dataset energy std: {energy_std:.5f}')
 

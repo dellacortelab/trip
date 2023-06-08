@@ -111,7 +111,7 @@ for subdir in os.listdir(test_dir):
 boxsize_data = [torch.full((pos_tensor.shape[0], 3), float('inf'), dtype=torch.float32) for pos_tensor in pos_data]
 
 container.set_data('test', species_data, pos_data, energy_data, forces_data, boxsize_data)
-save_path = os.path.join(data_dir, 'ani1x.trip')
+save_path = os.path.join(data_dir, 'ani1x.h5')
 
 container.save_data(save_path)
 
@@ -127,5 +127,5 @@ for subset in subsets:
         new_data.append([conf[0,None,...] for conf in category])
     test_container.set_data(subset, *new_data)
 
-test_path = os.path.join(data_dir, 'test.trip')
+test_path = os.path.join(data_dir, 'test.h5')
 test_container.save_data(test_path)

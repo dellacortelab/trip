@@ -1,4 +1,5 @@
 import argparse
+import cmaps
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
@@ -41,7 +42,7 @@ if __name__ == '__main__':
 
     # Prepare atomistic system 
     box_size = torch.tensor(float('inf'), dtype=torch.float, device=device)
-    dists = torch.linspace(0.5, 4.5, 100, device=device)
+    dists = torch.linspace(0.5, 4.5, 81, device=device)
     grid_a, grid_b = torch.meshgrid(dists, dists)
     pos = torch.zeros(len(dists), len(dists), 3, 3, device=device)
     ang = torch.tensor(104.5 * 3.141592 / 180) # 104.5 deg in rad
@@ -78,15 +79,6 @@ if __name__ == '__main__':
 
     # Save data
     base = os.path.join(args.out, args.label + '_pes')
-    np.savez(base + '.npz', grid_a, grid_b, energies)
-
-    fig, ax = plt.subplots(1,1)
-    cp = ax.contourf(grid_a, grid_b, energies, cmap=cmaps.davos, levels=15)
-    fig.colorbar(cp)
-    ax.set_xlabel(r'Bond length O-H$_1$ ($\AA$)')
-    ax.set_ylabel(r'Bond length O-H$_2$ ($\AA$)')
-    ax.set_title(args.label)
-
-    plt.savefig(base + '.png', dpi=300)
+    np.savez(base + '.npz', grid_a=grid_a, grid_b=grid_b, energies=energies)
     
     logging.info('Finished')

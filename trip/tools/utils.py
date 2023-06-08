@@ -10,3 +10,4 @@ def get_species(symbols):
 def save_pdb(pos, topo, name, out, **args):
     with open(os.path.join(out, name+'.pdb'), 'w') as f:
         pdbfile.PDBFile.writeFile(topo, pos*angstrom, f)
+        

@@ -36,18 +36,18 @@ from trip.data_loading import Container
 
 class TrIPDataModule(DataModule):
     def __init__(self,
-                 trip_file: pathlib.Path,
+                 data_file: pathlib.Path,
                  batch_size: int = 1,
                  num_workers: int = 8,
                  ebe_dict: dict = {},
                  **kwargs,
                  ):
         super().__init__(batch_size=batch_size, num_workers=num_workers, collate_fn=self._collate)
-        self._load_data(trip_file, ebe_dict)
+        self._load_data(data_file, ebe_dict)
 
-    def _load_data(self, trip_file: pathlib.Path, ebe_dict: dict):
+    def _load_data(self, data_file: pathlib.Path, ebe_dict: dict):
         # Load data
-        container = Container(trip_file)
+        container = Container(data_file)
 
         # Preprocess data
         self._species_list = self._calc_species_list(container)
@@ -86,8 +86,11 @@ class TrIPDataModule(DataModule):
             si_tensor[s - 1] = e  # -1 so H starts at 0.
 
         # Use residuals to calculate dataset std
-        sum_sq_residuals = sol[1][0]
-        std = np.sqrt(sum_sq_residuals / len(b))
+        if len(sol[1]):
+            sum_sq_residuals = sol[1][0]
+            std = np.sqrt(sum_sq_residuals / len(b))
+        else:
+            std = np.std(b - A@sol[0])
         return si_tensor, std
                 
     def _calc_species_list(self, container):
@@ -153,7 +156,7 @@ class TrIPDataModule(DataModule):
     @staticmethod
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("TrIP dataset")
-        parser.add_argument('--trip_file', type=pathlib.Path, default=pathlib.Path('/results/ani1x.trip'),
+        parser.add_argument('--data_file', type=pathlib.Path, default=pathlib.Path('/results/ani1x.h5'),
                             help='Directory where the data is located or should be downloaded')
         return parent_parser
 
