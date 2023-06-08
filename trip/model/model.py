@@ -355,7 +355,7 @@ class TrIP(TrIPModel):
 
     @staticmethod
     def loss_fn(pred, target, beta=1e-1):  # Uses Pseudo Huber Loss
-        calc_loss = lambda x : beta * (torch.mean(torch.sqrt(x + beta**2/4)) - beta/2)  # Approximates mean(x) when x << beta, approximates beta*mean(sqrt(x)) when x >> beta
+        calc_loss = lambda x : beta * (torch.mean(torch.sqrt(x + beta**2)) - beta)  # Approximates mean(x) when x << beta, approximates beta*mean(sqrt(x)) when x >> beta
         energy_loss = calc_loss((pred[0] - target[0])**2)
         forces_loss = calc_loss(torch.sum((pred[1] - target[1])**2, dim=1))  # Argument is squared norm
         return energy_loss, forces_loss
