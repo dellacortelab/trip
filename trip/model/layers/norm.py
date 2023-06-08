@@ -27,23 +27,12 @@ import torch
 from torch import nn
 from torch import Tensor
 from torch.nn import init
-from torch.nn import functional as F
 from torch.cuda.nvtx import range as nvtx_range
 from torch.nn.parameter import Parameter
 
 from se3_transformer.model import Fiber
 
 
-class TrIPActivation(nn.Module):
-    """
-    A smooth activation function
-    """
-    def __init__(self):
-        super(TrIPActivation, self).__init__()
-
-    def forward(self, input: Tensor) -> Tensor:
-        den = input * torch.nan_to_num(torch.exp(-1 / torch.abs(input)))
-        return 2 * input / den
 
 class TrIPNorm(nn.Module):
     """
@@ -56,7 +45,7 @@ class TrIPNorm(nn.Module):
 
     NORM_CLAMP = 2 ** -12  # Minimum positive subnormal for FP16  # TRIP
 
-    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = TrIPActivation()):
+    def __init__(self, fiber: Fiber, nonlinearity: nn.Module = lambda x : x):
         super().__init__()
         self.fiber = fiber
         self.nonlinearity = nonlinearity

@@ -241,7 +241,7 @@ class TrIPModel(TrIPTransformer):
 
     @staticmethod
     def bump_fn(x, k=1):
-        return torch.exp(1 - k / (1 - x**2))  # This should be k - k for bump to be 0 near origin. This is a bug!
+        return torch.exp(1 - k / (1 - x**2))
 
     def screened_coulomb(self, graph, dist, scale):
         Z = graph.ndata['species']
