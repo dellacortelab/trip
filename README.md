@@ -6,13 +6,20 @@
     ```
     git clone https://github.com/bhedelius/TrIP/
     ```
+    
+2. Put the model parameters file in the results folder
 
-2. Build the TrIP PyTorch NGC container.
+    ```
+    mkdir results
+    wget https://byu.box.com/shared/static/gae87305mm1kva258je0lku9406u60ts.pth -O results/trip_vanilla.pth
+    ```
+
+3. Build the TrIP PyTorch NGC container
     ```
     docker build -t trip .
     ```
 
-3. Start an interactive session in the NGC container
+4. Start an interactive session in the NGC container
     ```
     docker run -it --gpus all --shm-size=128g --ulimit memlock=-1 --ulimit stack=6710886400 --rm -v ${PWD}/results:/results trip:latest
     ```
