@@ -2,6 +2,7 @@ import argparse
 import logging
 import numpy as np
 import os
+import pickle as pkl
 
 import MDAnalysis as mda
 from openff.qcsubmit.results import TorsionDriveResultCollection
@@ -24,6 +25,9 @@ def parse_args():
     parser.add_argument('--model_file', type=str, default='/results/trip_vanilla.pth',
                         help='Path to model file, default=/results/trip_vanilla.pth')
     parser.add_argument('--gpu', type=int, default=0, help='Which GPU to use, default=0')
+    parser.add_argument('--start', type=int, default=0)
+    parser.add_argument('--stop', type=int, default=-1)
+    
     args = parser.parse_args()
     return args
 
@@ -52,24 +56,53 @@ if __name__ == '__main__':
     torch.cuda.set_device(device)
 
     module = TrIPModule(species=[], **vars(args))
-    
+    args.model_file = 'ani2x'
+    module2 = TrIPModule(species=[], **vars(args))
+
+    data = {'i': [],
+            'j': [],
+            'qc': {'pos': [],
+                     'angle': [],
+                     'energy': []},
+            'trip': {'pos': [],
+                       'angle': [],
+                       'energy': []},
+            'ani': {'pos': [],
+                      'angle': [],
+                      'energy': []}}
+
     # Run calculations
     element_filter = ElementFilter(allowed_elements=['H','C','N','O'])
     torsion_drive_result_collection = TorsionDriveResultCollection.parse_file(args.json)
     torsion_drive_result_collection = torsion_drive_result_collection.filter(element_filter)
     torsion_drive_records = torsion_drive_result_collection.to_records()
-    for i, (torsion_drive_record, molecule) in enumerate(torsion_drive_records):
+    for i, (torsion_drive_record, molecule) in enumerate(torsion_drive_records[args.start:args.stop]):
         # Filter out wrong atom types
         for j, atom_nums in enumerate(torsion_drive_record.dict()['keywords']['dihedrals']):
             atom_nums = list(atom_nums)
             for grid_id, qc_conformer in zip(molecule.properties["grid_ids"], molecule.conformers):
-                universe = construct_universe(molecule, qc_conformer)
-                torsion_scanner = TorsionScanner(universe, atom_nums)
-                pos, angle, energy = torsion_scanner.min(module)
+                print(f'Running torsion scan {i} {j} {grid_id}')
+                try:
+                    universe = construct_universe(molecule, qc_conformer)
+                    torsion_scanner = TorsionScanner(universe, atom_nums)
+                    pos, angle, energy = torsion_scanner.min(module)
+                    pos2, angle2, energy2 = torsion_scanner.min(module2)
+                    data['i'].append(i)
+                    data['j'].append(j)
+                    data['qc']['pos'].append(qc_conformer.to(unit.angstrom).magnitude)
+                    data['qc']['angle'].append(float(grid_id[1:-1]))
+                    data['qc']['energy'].append(torsion_drive_record.dict()['final_energy_dict'][grid_id])
+                    data['trip']['pos'].append(pos.detach().cpu().numpy())
+                    data['trip']['angle'].append((angle*180/3.141592).detach().cpu().item())
+                    data['trip']['energy'].append(energy)
+                    data['ani']['pos'].append(pos2.detach().cpu().numpy())
+                    data['ani']['angle'].append((angle2*180/3.141592).detach().cpu().item())
+                    data['ani']['energy'].append(energy2)
+                except:
+                    print('error, continuing`')
 
-    #plt.plot(angles, energies)
-    #plt.xlabel('Angle (rad)')
-    #plt.ylabel('Energy (Ha)')
-    #plt.savefig(base +  '.png', dpi=300, transparent=True)
-    
+
+    with open('/result/torsion_benchmark_{arg.gpu}.pkl', 'wb') as f:
+        pkl.dump(data, f)
+ 
     logging.info('Finished')

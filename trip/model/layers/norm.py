@@ -104,8 +104,6 @@ class TrIPLayerNorm(nn.Module):
         return '{normalized_shape}, ' \
             'elementwise_affine={elementwise_affine}'.format(**self.__dict__)
 
-
-# TODO: Fix this code so it trains correctly
 class TrIPGroupNorm(nn.Module):
     def __init__(self, num_channels, num_groups, elementwise_affine=True, device=None, dtype=None):
         factory_kwargs = {'device': device, 'dtype': dtype}
