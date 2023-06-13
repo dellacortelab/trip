@@ -9,7 +9,7 @@ import numpy as np
 
 ######Load Model############
 
-model = TrIP.load('/results/model_ani1x.pth', map_location='cuda:0')
+model = TrIP.load('/results/trip_vanilla.pth', map_location='cuda:0')
 model.to('cuda:0')
 
 class SE3Module(torch.nn.Module):
