@@ -128,5 +128,5 @@ class TrIPGroupNorm(nn.Module):
         return out * self.weight if self.elementwise_affine else out
 
     def extra_repr(self) -> str:
-        return '{num_groups}, {num_channels}, eps={eps}, ' \
+        return '{num_groups}, {num_channels}, ' \
             'affine={elementwise_affine}'.format(**self.__dict__)
