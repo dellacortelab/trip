@@ -58,7 +58,7 @@ def save_state(model: nn.Module, epoch: int, path: pathlib.Path, callbacks: List
     """ Saves model, optimizer and epoch states to path (only once per node) """
     if get_local_rank() == 0:
         module = model.module if isinstance(model, DistributedDataParallel) else model
-        checkpoint = module.checkpoint(epoch)
+        checkpoint = module.get_checkpoint(epoch)
 
         for callback in callbacks:
             callback.on_checkpoint_save(checkpoint)
