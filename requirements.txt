@@ -8,3 +8,4 @@ colormap==1.0.4
 MDAnalysis==2.4.3
 torchani==2.2.3
 cmaps==1.0.5
+pandas==2.0.1

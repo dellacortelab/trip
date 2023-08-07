@@ -362,9 +362,10 @@ class TrIP(TrIPModel):
 
     @staticmethod
     def error_fn(pred, target, num_atoms=0):
-        end = len(pred[0]-num_atoms)
-        energy_error = torch.mean((pred[0][:end] - target[0][:end])**2)
-        forces_error = torch.mean(torch.mean((pred[1][:end] - target[1][:end])**2, dim=1))
+        end = len(pred[0]) - num_atoms
+        energy_error = torch.sum((pred[0][:end] - target[0][:end])**2)
+        end = len(pred[1]) - num_atoms
+        forces_error = torch.sum((pred[1][:end] - target[1][:end])**2)
         return energy_error, forces_error
 
     @staticmethod

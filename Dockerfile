@@ -54,7 +54,7 @@ ADD . .
 
 RUN conda update conda
 RUN conda install -c conda-forge mamba
-#RUN conda install -c conda-forge openmm 
+RUN mamba install -c conda-forge openmm 
 RUN mamba install openff-toolkit openff-qcsubmit
 
 ENV DGLBACKEND=pytorch

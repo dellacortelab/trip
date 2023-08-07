@@ -90,7 +90,9 @@ def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error
     num_confs_acc = torch.zeros((1,), device='cuda')
     for i, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader), unit='batch',
                          desc=f'Epoch {epoch_idx}', disable=(args.silent or local_rank != 0)):
-        batch, num_atoms = add_atom_data(*batch)
+        num_atoms = 0
+        if args.add_atoms:
+            batch, num_atoms = add_atom_data(*batch)
         species, pos_list, energy, forces, boxsize = to_cuda(batch)
         target = energy, forces
         graph = graph_constructor.create_graphs(pos_list, boxsize)
@@ -128,7 +130,7 @@ def train_epoch(model, graph_constructor, add_atom_data, train_dataloader, error
     energy_loss = energy_loss_acc / (i + 1)
     forces_loss = forces_loss_acc / (i + 1)
     energy_error = energy_error_acc / num_confs_acc
-    forces_error = forces_error_acc / num_atoms_acc
+    forces_error = forces_error_acc / num_atoms_acc / 3
 
     return energy_loss, forces_loss, energy_error, forces_error
 
