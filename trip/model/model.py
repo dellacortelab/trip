@@ -241,7 +241,7 @@ class TrIPModel(TrIPTransformer):
 
     @staticmethod
     def bump_fn(x, k=1):
-        return torch.exp(1 - k / (1 - x**2))
+        return torch.exp(k - k / (1 - x**2))
 
     def screened_coulomb(self, graph, dist, scale):
         Z = graph.ndata['species']
