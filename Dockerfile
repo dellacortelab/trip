@@ -52,10 +52,9 @@ ADD requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 ADD . .
 
-#RUN conda update conda
-#RUN conda install -c conda-forge mamba
-#RUN mamba install -c conda-forge openmm 
-#RUN mamba install openff-toolkit openff-qcsubmit
+RUN conda update conda
+RUN conda install -c conda-forge mamba
+RUN mamba install -c conda-forge openmm
 
 ENV DGLBACKEND=pytorch
 ENV OMP_NUM_THREADS=1

@@ -89,3 +89,9 @@ python -m trip.tools.md
 ```
 python -m trip.tools.energy_sweep
 ```
+
+## Torsion Benchmark
+```
+mamba install -c conda-forge openff-toolkit openff-qcsubmit
+bash scripts/torsion_benchmark.sh
+```

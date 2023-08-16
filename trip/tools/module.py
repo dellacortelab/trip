@@ -17,7 +17,6 @@ class TrIPModule(torch.nn.Module):
         self.species_tensor = torch.tensor(species, dtype=torch.long, device=self.device)
         self.constraints = constraints
         if model_file == 'ani2x':
-            self.species_tensor = self.species_tensor.unsqueeze(0)
             self.model = torchani.models.ANI2x(periodic_table_index=True).to(self.device)
             self.forward = self.ani_forward
         else:
@@ -39,7 +38,7 @@ class TrIPModule(torch.nn.Module):
     def ani_forward(self, pos, boxsize, forces=True):
         # Only supports boxsize == inf
         pos.requires_grad_(True)
-        energy = self.model((self.species_tensor, pos.unsqueeze(0))).energies.sum()
+        energy = self.model((self.species_tensor.unsqueeze(0), pos.unsqueeze(0))).energies.sum()
         if forces:
             forces = -torch.autograd.grad(energy.sum(), pos)[0]
             return energy.item(), forces
