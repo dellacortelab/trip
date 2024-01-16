@@ -22,7 +22,7 @@ def parse_args():
                         help='The path to the output directory, default=/results/')
     parser.add_argument('--label', type=str, default='trip',
                         help='What to call the outputs')
-    parser.add_argument('--model_file', type=str, default='/results/trip_vanilla.pth',
+    parser.add_argument('--model_file', type=str, default='/results/trip.pth',
                         help='Path to model file, default=/results/trip_vanilla.pth')
     parser.add_argument('--gpu', type=int, default=0, help='Which GPU to use, default=0')
     parser.add_argument('--start', type=int, default=0)
@@ -72,12 +72,11 @@ if __name__ == '__main__':
                       'energy': []}}
 
     # Run calculations
-    element_filter = ElementFilter(allowed_elements=['H','C','N','O'])
+    element_filter = ElementFilter(allowed_elements=['H','C','N','O'])  # Filter out wrong atom types
     torsion_drive_result_collection = TorsionDriveResultCollection.parse_file(args.json)
     torsion_drive_result_collection = torsion_drive_result_collection.filter(element_filter)
     torsion_drive_records = torsion_drive_result_collection.to_records()
     for i, (torsion_drive_record, molecule) in enumerate(torsion_drive_records[args.start:args.stop]):
-        # Filter out wrong atom types
         for j, atom_nums in enumerate(torsion_drive_record.dict()['keywords']['dihedrals']):
             atom_nums = list(atom_nums)
             for grid_id, qc_conformer in zip(molecule.properties["grid_ids"], molecule.conformers):
@@ -99,10 +98,10 @@ if __name__ == '__main__':
                     data['ani']['angle'].append((angle2*180/3.141592).detach().cpu().item())
                     data['ani']['energy'].append(energy2)
                 except:
-                    print('error, continuing`')
+                    print('error, continuing')
 
 
-    with open('/result/torsion_benchmark_{arg.gpu}.pkl', 'wb') as f:
-        pkl.dump(data, f)
+        with open(f'/results/torsion_benchmark_{args.gpu}.pkl', 'wb') as f:
+            pkl.dump(data, f)
  
     logging.info('Finished')

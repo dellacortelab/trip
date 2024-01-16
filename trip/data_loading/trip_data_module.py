@@ -40,12 +40,14 @@ class TrIPDataModule(DataModule):
                  batch_size: int = 1,
                  num_workers: int = 8,
                  ebe_dict: dict = {},
+                 si_tensor: Tensor = None,
+                 energy_std: float = None,
                  **kwargs,
                  ):
         super().__init__(batch_size=batch_size, num_workers=num_workers, collate_fn=self._collate)
-        self._load_data(data_file, ebe_dict)
+        self._load_data(data_file, ebe_dict, energy_std, si_tensor)
 
-    def _load_data(self, data_file: pathlib.Path, ebe_dict: dict):
+    def _load_data(self, data_file: pathlib.Path, ebe_dict: dict, energy_std: float=None, si_tensor: Tensor=None):
         # Load data
         container = Container(data_file)
 
@@ -54,7 +56,11 @@ class TrIPDataModule(DataModule):
         self._ebe_tensor = AtomicData.get_ebe_tensor()
         for s, e in ebe_dict.items():  # Use custom values
             self._ebe_tensor[s - 1] = e
-        self._si_tensor, self._energy_std = self._calc_si(container)
+        if energy_std is None and si_tensor is None:
+            self._si_tensor, self._energy_std = self._calc_si(container)
+        else:
+            self._si_tensor = si_tensor
+            self._energy_std = energy_std
         self._adjusted_ae_tensor = (self._ebe_tensor - self._si_tensor) / self._energy_std  # TODO: Check this is the correct value
 
         # Make dataset

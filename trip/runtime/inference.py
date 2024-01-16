@@ -97,14 +97,17 @@ if __name__ == '__main__':
     if args.wandb:
         loggers.append(WandbLogger(name=f'TrIP', save_dir=args.log_dir, project='trip'))
     logger = LoggerCollection(loggers)
-    datamodule = TrIPDataModule(**vars(args))
-    energy_std = datamodule.energy_std.item()
-
     graph_constructor = GraphConstructor(args.cutoff)
     model = TrIP.load(path=str(args.load_ckpt_path), 
                         map_location={'cuda:0': f'cuda:{local_rank}'})
+
+    si_tensor = model.si_tensor 
+    energy_std = model.energy_std
+    datamodule = TrIPDataModule(si_tensor=si_tensor, energy_std=energy_std, **vars(args))
+
     callbacks = [TrIPMetricCallback(logger, targets_std=energy_std, prefix='energy'),
                  TrIPMetricCallback(logger, targets_std=energy_std, prefix='forces')]
+
 
     if is_distributed:
         nproc_per_node = torch.cuda.device_count()
